@@ -240,3 +240,20 @@ if txns:
             st.rerun()
 else:
     st.info("No transactions found. Add some above!")
+
+# --- View Chart ---
+st.markdown("---")
+all_tickers_for_chart = get_distinct_tickers(conn)
+if all_tickers_for_chart:
+    chart_cols = st.columns([4, 1])
+    with chart_cols[0]:
+        chart_sel = st.selectbox(
+            "View price chart for:",
+            sorted(all_tickers_for_chart),
+            key="txn_chart_sel",
+        )
+    with chart_cols[1]:
+        st.markdown("&nbsp;")
+        if st.button("Open Chart →", use_container_width=True, key="txn_chart_btn"):
+            st.session_state["chart_ticker"] = chart_sel
+            st.switch_page("pages/stocks.py")

@@ -1,0 +1,22 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database (contains personal financial data — do not commit)
+db/*.db
+db/*.db-shm
+db/*.db-wal
+
+# Environment
+.env
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db

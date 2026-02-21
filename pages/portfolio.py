@@ -200,3 +200,15 @@ with summary_cols[2]:
 with summary_cols[3]:
     active_positions = sum(1 for p in positions if p.shares > 0)
     st.metric("Active Positions", str(active_positions))
+
+# --- View Chart ---
+st.markdown("---")
+chart_cols = st.columns([4, 1])
+pos_tickers = sorted(p.ticker for p in positions)
+with chart_cols[0]:
+    chart_sel = st.selectbox("View price chart for:", pos_tickers, key="portfolio_chart_sel")
+with chart_cols[1]:
+    st.markdown("&nbsp;")
+    if st.button("Open Chart →", use_container_width=True, key="portfolio_chart_btn"):
+        st.session_state["chart_ticker"] = chart_sel
+        st.switch_page("pages/stocks.py")
