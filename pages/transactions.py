@@ -14,6 +14,7 @@ from models.transaction import (
 )
 from services.excel_service import parse_excel, validate_rows, upsert_from_dataframe
 from services.market_data import get_ticker_info
+from services.cache import invalidate_portfolio_cache, invalidate_performance_cache
 
 st.header("Transactions")
 
@@ -83,6 +84,8 @@ with entry_tab:
                 }
                 try:
                     insert_transaction(conn, txn)
+                    invalidate_portfolio_cache()
+                    invalidate_performance_cache(conn)
                     st.success(f"Added {txn_side} {txn_qty} {txn_ticker.upper()} @ {txn_price}")
                     st.rerun()
                 except Exception as e:
@@ -132,6 +135,8 @@ with upload_tab:
 
                 if st.button("Import Transactions", type="primary"):
                     result = upsert_from_dataframe(conn, valid_df)
+                    invalidate_portfolio_cache()
+                    invalidate_performance_cache(conn)
                     st.success(
                         f"Inserted: {result['inserted']}, Updated: {result['updated']}"
                     )
@@ -210,11 +215,15 @@ if txns:
                         "quantity": new_qty,
                         "notes": new_notes or None,
                     })
+                    invalidate_portfolio_cache()
+                    invalidate_performance_cache(conn)
                     st.success("Updated.")
                     st.rerun()
             with btn_cols[1]:
                 if st.button("Delete", type="secondary", use_container_width=True):
                     delete_transaction(conn, selected_txn["id"])
+                    invalidate_portfolio_cache()
+                    invalidate_performance_cache(conn)
                     st.success("Deleted.")
                     st.rerun()
 
@@ -225,6 +234,8 @@ if txns:
         confirm = st.checkbox("I understand this will permanently delete all transactions", key="confirm_delete_all")
         if st.button("Delete All Transactions", type="primary", disabled=not confirm):
             count = delete_all_transactions(conn)
+            invalidate_portfolio_cache()
+            invalidate_performance_cache(conn)
             st.success(f"Deleted {count} transaction(s).")
             st.rerun()
 else:

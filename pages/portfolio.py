@@ -14,7 +14,8 @@ from models.portfolio import (
     clear_rules,
     get_portfolio_filters,
 )
-from services.portfolio_engine import compute_portfolio, positions_to_dataframe
+from services.portfolio_engine import positions_to_dataframe
+from services.cache import get_cached_portfolio, invalidate_portfolio_cache
 from utils.formatters import fmt_currency
 
 st.header("Portfolio")
@@ -122,10 +123,10 @@ elif view_mode == "Custom Portfolio":
 
 # --- Compute and Display Portfolio ---
 if st.button("Refresh Portfolio Data", type="primary"):
-    st.cache_data.clear()
+    invalidate_portfolio_cache()
 
 with st.spinner("Computing portfolio..."):
-    positions = compute_portfolio(conn, brokers=brokers_filter, tickers=tickers_filter)
+    positions = get_cached_portfolio(conn, brokers=brokers_filter, tickers=tickers_filter)
 
 if not positions:
     st.info("No positions found for the selected view.")
@@ -136,23 +137,26 @@ df = positions_to_dataframe(positions, current_year)
 
 # Summary metrics
 total_investment = sum(p.total_investment_sgd for p in positions)
+total_cost_basis = sum(p.cost_basis_sgd for p in positions)
 total_value = sum(p.current_value_sgd for p in positions)
 total_realized = sum(p.realized_pnl_sgd for p in positions)
 total_unrealized = sum(p.unrealized_pnl_sgd for p in positions)
 total_pnl = total_realized + total_unrealized
 
-metric_cols = st.columns(5)
+metric_cols = st.columns(6)
 with metric_cols[0]:
     st.metric("Total Investment", fmt_currency(total_investment))
 with metric_cols[1]:
-    st.metric("Current Value", fmt_currency(total_value))
+    st.metric("Exposure", fmt_currency(total_cost_basis))
 with metric_cols[2]:
+    st.metric("Market Value", fmt_currency(total_value))
+with metric_cols[3]:
     st.metric("Realised P&L", fmt_currency(total_realized),
               delta=f"{total_realized:+,.2f}")
-with metric_cols[3]:
+with metric_cols[4]:
     st.metric("Unrealised P&L", fmt_currency(total_unrealized),
               delta=f"{total_unrealized:+,.2f}")
-with metric_cols[4]:
+with metric_cols[5]:
     st.metric("Total P&L", fmt_currency(total_pnl),
               delta=f"{total_pnl:+,.2f}")
 
@@ -161,19 +165,21 @@ st.dataframe(
     df.style.format({
         "Shares": "{:.2f}",
         "Market Px": "{:.2f}",
-        "Cost Basis/Share": "{:.2f}",
-        "Total Investment (S$)": "{:,.2f}",
-        "Current Value (S$)": "{:,.2f}",
+        "Avg Cost/Share": "{:.2f}",
+        "Investment (S$)": "{:,.2f}",
+        "Exposure (S$)": "{:,.2f}",
+        "Market Value (S$)": "{:,.2f}",
         "Realised P&L (S$)": "{:+,.2f}",
         "Unrealised P&L (S$)": "{:+,.2f}",
         "P&L (S$)": "{:+,.2f}",
+        "P&L %": "{:+.2f}%",
         f"Div {current_year-2} (S$)": "{:,.2f}",
         f"Div {current_year-1} (S$)": "{:,.2f}",
         f"Div {current_year} (S$)": "{:,.2f}",
     }).map(
         lambda v: "color: green" if isinstance(v, (int, float)) and v > 0 else
                   ("color: red" if isinstance(v, (int, float)) and v < 0 else ""),
-        subset=["Realised P&L (S$)", "Unrealised P&L (S$)", "P&L (S$)"],
+        subset=["Realised P&L (S$)", "Unrealised P&L (S$)", "P&L (S$)", "P&L %"],
     ),
     use_container_width=True,
     hide_index=True,
@@ -189,7 +195,7 @@ with summary_cols[0]:
 with summary_cols[1]:
     st.metric(f"Dividends {current_year - 1}", fmt_currency(total_div_prev))
 with summary_cols[2]:
-    pct_return = ((total_value - total_investment) / total_investment * 100) if total_investment > 0 else 0
+    pct_return = (total_pnl / total_investment * 100) if total_investment > 0 else 0
     st.metric("Return %", f"{pct_return:+.2f}%")
 with summary_cols[3]:
     active_positions = sum(1 for p in positions if p.shares > 0)

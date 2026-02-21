@@ -154,20 +154,29 @@ def _impute_missing_dates(df: pd.DataFrame) -> tuple[pd.DataFrame, list[int]]:
 def upsert_from_dataframe(conn, df: pd.DataFrame) -> dict:
     """Upsert validated rows into the database. Returns summary."""
     from models.transaction import upsert_transaction
+    from services.market_data import get_ticker_info
 
     inserted = 0
     updated = 0
     errors = []
 
+    # Cache currency lookups per ticker to avoid repeated calls
+    currency_cache = {}
+
     for _, row in df.iterrows():
+        ticker = row["ticker"]
+        if ticker not in currency_cache:
+            info = get_ticker_info(conn, ticker)
+            currency_cache[ticker] = info.get("currency", "USD")
+
         txn = {
             "date": row["date"],
-            "ticker": row["ticker"],
+            "ticker": ticker,
             "side": row["side"],
             "price": row["price"],
             "quantity": row["quantity"],
             "broker": row["broker"],
-            "currency": row.get("currency", "USD"),
+            "currency": row.get("currency") or currency_cache[ticker],
         }
         try:
             _, action = upsert_transaction(conn, txn)

@@ -91,6 +91,24 @@ TABLES = [
         fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS historical_price_cache (
+        ticker          TEXT NOT NULL,
+        date            TEXT NOT NULL,
+        close_price     REAL NOT NULL,
+        currency        TEXT,
+        PRIMARY KEY (ticker, date)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_hpc_ticker ON historical_price_cache(ticker)",
+    """
+    CREATE TABLE IF NOT EXISTS performance_cache (
+        cache_key               TEXT PRIMARY KEY,
+        data_json               TEXT NOT NULL,
+        transaction_fingerprint TEXT NOT NULL,
+        cached_at               TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
 ]
 
 

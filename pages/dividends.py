@@ -5,65 +5,110 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 
-from services.portfolio_engine import compute_portfolio
-from services.dividend_service import get_dividend_summary_by_year
+from services.cache import get_cached_portfolio
 from utils.formatters import fmt_currency
 
 st.header("Dividends")
 
 conn = st.session_state.conn
-current_year = datetime.now().year
 
-# Compute portfolio to get dividend data
 with st.spinner("Loading dividend data..."):
-    positions = compute_portfolio(conn)
+    positions = get_cached_portfolio(conn)
 
 if not positions:
     st.info("No positions found. Add transactions first.")
     st.stop()
 
-# Year filter
-years = list(range(current_year, current_year - 4, -1))
-selected_years = st.multiselect("Filter by Year", years, default=[current_year, current_year - 1])
-
-# --- Summary by Year ---
-year_summary = get_dividend_summary_by_year(conn, positions, current_year)
-
-if year_summary:
-    st.subheader("Dividend Summary by Year")
-    summary_cols = st.columns(len(year_summary))
-    for i, (year, total) in enumerate(year_summary.items()):
-        with summary_cols[i]:
-            st.metric(f"Year {year}", fmt_currency(total))
-
-# --- Detailed Dividend Records ---
-st.subheader("Dividend Details")
-
+# Collect ALL dividend records across all positions and all years
 all_records = []
 for pos in positions:
     for rec in pos.dividend_records:
-        if not selected_years or rec["year"] in selected_years:
-            all_records.append({
-                "Ticker": pos.ticker,
-                "Ex-Date": rec["ex_date"],
-                "Year": rec["year"],
-                "Div/Share": rec["div_per_share"],
-                "Shares Held": rec["shares_held"],
-                "Gross (Native)": rec["gross_native"],
-                "Currency": rec["currency"],
-                "WHT Rate": rec["wht_rate"],
-                "Tax (Native)": rec["tax_native"],
-                "Net (Native)": rec["net_native"],
-                "FX Rate": rec["fx_rate"],
-                "Net (S$)": rec["net_sgd"],
-            })
+        all_records.append({
+            "Ticker": pos.ticker,
+            "Ex-Date": rec["ex_date"],
+            "Year": rec["year"],
+            "Div/Share": rec["div_per_share"],
+            "Shares Held": rec["shares_held"],
+            "Gross (Native)": rec["gross_native"],
+            "Currency": rec["currency"],
+            "WHT Rate": rec["wht_rate"],
+            "Tax (Native)": rec["tax_native"],
+            "Net (Native)": rec["net_native"],
+            "FX Rate": rec["fx_rate"],
+            "Net (S$)": rec["net_sgd"],
+        })
 
-if all_records:
-    df = pd.DataFrame(all_records)
-    df = df.sort_values(["Ex-Date", "Ticker"], ascending=[False, True])
+if not all_records:
+    st.info("No dividend records found.")
+    st.stop()
 
+df = pd.DataFrame(all_records)
+df = df.sort_values(["Ex-Date", "Ticker"], ascending=[False, True])
+
+all_years = sorted(df["Year"].unique(), reverse=True)
+
+# --- Summary metrics by year ---
+st.subheader("Summary by Year")
+year_totals = df.groupby("Year")["Net (S$)"].sum()
+cols = st.columns(min(len(all_years), 6))
+for i, year in enumerate(all_years[:6]):
+    with cols[i]:
+        st.metric(str(year), fmt_currency(year_totals.get(year, 0)))
+
+# --- Dividends by Year bar chart ---
+st.subheader("Dividends by Year")
+year_div = df.groupby("Year")["Net (S$)"].sum().reset_index().sort_values("Year")
+year_div["Year"] = year_div["Year"].astype(str)  # string prevents fractional x-axis labels
+
+fig_year = px.bar(
+    year_div,
+    x="Year",
+    y="Net (S$)",
+    title="Net Dividends by Year (S$)",
+    color="Year",
+)
+fig_year.update_layout(
+    height=350,
+    margin=dict(l=0, r=0, t=40, b=0),
+    showlegend=False,
+    xaxis=dict(type="category"),  # force categorical axis — no interpolation
+)
+st.plotly_chart(fig_year, use_container_width=True)
+
+# --- Per-year breakdown: select year to see per-stock chart ---
+st.subheader("Breakdown by Stock")
+selected_year = st.selectbox("Select Year", all_years, format_func=str)
+
+year_df = df[df["Year"] == selected_year]
+ticker_div = year_df.groupby("Ticker")["Net (S$)"].sum().reset_index()
+ticker_div = ticker_div.sort_values("Net (S$)", ascending=False)
+
+if not ticker_div.empty:
+    fig_ticker = px.bar(
+        ticker_div,
+        x="Ticker",
+        y="Net (S$)",
+        title=f"Net Dividends by Stock — {selected_year}",
+        color="Ticker",
+    )
+    fig_ticker.update_layout(
+        height=350,
+        margin=dict(l=0, r=0, t=40, b=0),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_ticker, use_container_width=True)
+    st.caption(f"Total net dividends in {selected_year}: **{fmt_currency(ticker_div['Net (S$)'].sum())}**")
+else:
+    st.info(f"No dividend records for {selected_year}.")
+
+# --- Detailed table ---
+st.subheader("Dividend Details")
+show_all = st.checkbox("Show all years", value=False)
+display_df = df if show_all else year_df
+
+if not display_df.empty:
     st.dataframe(
-        df.style.format({
+        display_df.style.format({
             "Div/Share": "{:.4f}",
             "Shares Held": "{:.2f}",
             "Gross (Native)": "{:,.2f}",
@@ -76,50 +121,7 @@ if all_records:
         use_container_width=True,
         hide_index=True,
     )
-
-    # Totals
-    total_net_sgd = df["Net (S$)"].sum()
-    total_tax_native = df["Tax (Native)"].sum()
+    total_net_sgd = display_df["Net (S$)"].sum()
     st.markdown(f"**Total Net Dividends (S$): {fmt_currency(total_net_sgd)}**")
-
-    # Chart: Dividends by ticker
-    st.subheader("Dividends by Ticker")
-    ticker_div = df.groupby("Ticker")["Net (S$)"].sum().reset_index()
-    ticker_div = ticker_div.sort_values("Net (S$)", ascending=False)
-
-    fig = px.bar(
-        ticker_div,
-        x="Ticker",
-        y="Net (S$)",
-        title="Net Dividends by Ticker (S$)",
-        color="Ticker",
-    )
-    fig.update_layout(
-        height=400,
-        margin=dict(l=0, r=0, t=40, b=0),
-        showlegend=False,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Chart: Dividends by year
-    if len(df["Year"].unique()) > 1:
-        st.subheader("Dividends by Year")
-        year_div = df.groupby("Year")["Net (S$)"].sum().reset_index()
-        year_div["Year"] = year_div["Year"].astype(str)
-
-        fig_year = px.bar(
-            year_div,
-            x="Year",
-            y="Net (S$)",
-            title="Net Dividends by Year (S$)",
-            color="Year",
-        )
-        fig_year.update_layout(
-            height=400,
-            margin=dict(l=0, r=0, t=40, b=0),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_year, use_container_width=True)
-
 else:
-    st.info("No dividend records found for the selected period.")
+    st.info("No dividend records for the selected period.")

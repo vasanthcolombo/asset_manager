@@ -7,6 +7,10 @@ import sqlite3
 from models.fx_rate import get_cached_rate, store_rate
 from config import BASE_CURRENCY
 
+# In-memory cache for live FX rates (avoids repeated yfinance calls within a process)
+_live_fx_cache: dict[str, tuple[float, datetime]] = {}
+_LIVE_FX_TTL = timedelta(minutes=5)
+
 
 def get_fx_rate(
     conn: sqlite3.Connection, from_currency: str, to_currency: str, date: str
@@ -42,12 +46,21 @@ def get_fx_rate(
 
 
 def get_live_fx_rate(from_currency: str, to_currency: str) -> float:
-    """Get the current live FX rate."""
+    """Get the current live FX rate. Cached in-memory for 5 minutes."""
     from_currency = from_currency.upper()
     to_currency = to_currency.upper()
 
     if from_currency == to_currency:
         return 1.0
+
+    cache_key = f"{from_currency}{to_currency}"
+    now = datetime.now()
+
+    # Check in-memory cache
+    if cache_key in _live_fx_cache:
+        rate, cached_at = _live_fx_cache[cache_key]
+        if (now - cached_at) < _LIVE_FX_TTL:
+            return rate
 
     pair = f"{from_currency}{to_currency}=X"
     try:
@@ -55,11 +68,14 @@ def get_live_fx_rate(from_currency: str, to_currency: str) -> float:
         fi = t.fast_info
         price = fi.get("lastPrice", None)
         if price and price > 0:
+            _live_fx_cache[cache_key] = (float(price), now)
             return float(price)
         # Fallback to history
         hist = t.history(period="1d")
         if not hist.empty:
-            return float(hist["Close"].iloc[-1])
+            rate = float(hist["Close"].iloc[-1])
+            _live_fx_cache[cache_key] = (rate, now)
+            return rate
     except Exception:
         pass
 
@@ -68,7 +84,9 @@ def get_live_fx_rate(from_currency: str, to_currency: str) -> float:
         try:
             r1 = get_live_fx_rate(from_currency, "USD")
             r2 = get_live_fx_rate("USD", to_currency)
-            return r1 * r2
+            rate = r1 * r2
+            _live_fx_cache[cache_key] = (rate, now)
+            return rate
         except Exception:
             pass
 

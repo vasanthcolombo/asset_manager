@@ -7,16 +7,16 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 from models.transaction import get_transactions
-from services.portfolio_engine import compute_portfolio
+from services.cache import get_cached_portfolio
 from utils.formatters import fmt_currency, fmt_pct
 
 st.header("Dashboard")
 
 conn = st.session_state.conn
 
-# Compute portfolio
+# Compute portfolio (cached for 5 min)
 with st.spinner("Loading portfolio..."):
-    positions = compute_portfolio(conn)
+    positions = get_cached_portfolio(conn)
 
 if not positions:
     st.info("Welcome! Start by adding transactions in the **Transactions** page.")
@@ -24,19 +24,20 @@ if not positions:
 
 # ---- Key Metrics ----
 active_positions = [p for p in positions if p.shares > 0]
-total_investment = sum(p.total_investment_sgd for p in active_positions)
+total_investment = sum(p.total_investment_sgd for p in positions)  # ALL positions (includes fully sold)
+total_cost_basis = sum(p.cost_basis_sgd for p in active_positions)
 total_value = sum(p.current_value_sgd for p in active_positions)
 total_realized = sum(p.realized_pnl_sgd for p in positions)
 total_unrealized = sum(p.unrealized_pnl_sgd for p in active_positions)
 total_pnl = total_realized + total_unrealized
-total_return_pct = ((total_value - total_investment) / total_investment * 100) if total_investment > 0 else 0
+total_return_pct = (total_pnl / total_investment * 100) if total_investment > 0 else 0
 
 current_year = datetime.now().year
 total_div_current = sum(p.dividends_for_year(current_year) for p in positions)
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Portfolio Value", fmt_currency(total_value))
+    st.metric("Market Value", fmt_currency(total_value))
 with col2:
     st.metric("Total Investment", fmt_currency(total_investment))
 with col3:
@@ -55,7 +56,7 @@ with gain_col:
     gainers = [p for p in sorted_by_pnl if p.total_pnl_sgd > 0][:5]
     if gainers:
         for p in gainers:
-            pct = (p.total_pnl_sgd / p.total_investment_sgd * 100) if p.total_investment_sgd > 0 else 0
+            pct = (p.total_pnl_sgd / p.cost_basis_sgd * 100) if p.cost_basis_sgd > 0 else 0
             st.markdown(f"**{p.ticker}** ({p.name}) — {fmt_currency(p.total_pnl_sgd)} ({pct:+.1f}%)")
     else:
         st.text("No gainers yet.")
@@ -65,7 +66,7 @@ with loss_col:
     losers = [p for p in reversed(sorted_by_pnl) if p.total_pnl_sgd < 0][:5]
     if losers:
         for p in losers:
-            pct = (p.total_pnl_sgd / p.total_investment_sgd * 100) if p.total_investment_sgd > 0 else 0
+            pct = (p.total_pnl_sgd / p.cost_basis_sgd * 100) if p.cost_basis_sgd > 0 else 0
             st.markdown(f"**{p.ticker}** ({p.name}) — {fmt_currency(p.total_pnl_sgd)} ({pct:+.1f}%)")
     else:
         st.text("No losers!")

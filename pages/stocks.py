@@ -2,10 +2,11 @@
 
 import streamlit as st
 import pandas as pd
+import yfinance as yf
 import plotly.graph_objects as go
 
 from models.watchlist import add_to_watchlist, get_watchlist, remove_from_watchlist
-from services.market_data import get_live_price, get_historical_prices, get_ticker_info
+from services.market_data import get_live_prices_batch, get_historical_prices, get_ticker_info
 
 st.header("Watchlist")
 
@@ -32,31 +33,45 @@ if not watchlist:
     st.info("Your watchlist is empty. Add tickers above!")
     st.stop()
 
-# Fetch live data for all watchlist tickers
+tickers = [item["ticker"] for item in watchlist]
+
+# Batch fetch all live prices in one yf.download() call
+with st.spinner("Fetching prices..."):
+    live_prices = get_live_prices_batch(conn, tickers)
+
+    # Batch fetch day change using a single yf.download for 5 days
+    day_changes = {}
+    try:
+        start_5d = (pd.Timestamp.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+        hist_df = yf.download(tickers, start=start_5d, progress=False, threads=True)
+        if not hist_df.empty:
+            if len(tickers) == 1:
+                closes = hist_df["Close"]
+                if len(closes) >= 2:
+                    day_changes[tickers[0]] = ((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100)
+            else:
+                for t in tickers:
+                    try:
+                        closes = hist_df["Close"][t].dropna()
+                        if len(closes) >= 2:
+                            day_changes[t] = ((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
 rows = []
 for item in watchlist:
     ticker = item["ticker"]
-    price_data = get_live_price(conn, ticker)
+    price_data = live_prices.get(ticker, {"price": 0.0, "currency": "USD"})
     info = get_ticker_info(conn, ticker)
-
-    # Get day change
-    try:
-        hist = get_historical_prices(ticker, start=pd.Timestamp.now() - pd.Timedelta(days=5))
-        if len(hist) >= 2:
-            prev_close = hist["Close"].iloc[-2]
-            curr_close = hist["Close"].iloc[-1]
-            day_change_pct = ((curr_close - prev_close) / prev_close * 100) if prev_close else 0
-        else:
-            day_change_pct = 0
-    except Exception:
-        day_change_pct = 0
 
     rows.append({
         "Ticker": ticker,
         "Name": info.get("name", ticker),
-        "Price": price_data["price"],
-        "Currency": price_data["currency"],
-        "Day Change %": day_change_pct,
+        "Price": price_data.get("price", 0.0),
+        "Currency": price_data.get("currency", "USD"),
+        "Day Change %": day_changes.get(ticker, 0.0),
     })
 
 df = pd.DataFrame(rows)
