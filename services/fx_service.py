@@ -42,7 +42,25 @@ def get_fx_rate(
             store_rate(conn, date, from_currency, to_currency, rate)
             return rate
 
-    return 1.0  # Last resort fallback
+    # Use nearest cached rate for this pair (avoids wrong 1.0 fallback)
+    nearby = conn.execute(
+        "SELECT rate FROM fx_rate_cache "
+        "WHERE from_currency = ? AND to_currency = ? "
+        "ORDER BY ABS(julianday(date) - julianday(?)) LIMIT 1",
+        (from_currency, to_currency, date),
+    ).fetchone()
+    if nearby:
+        rate = nearby["rate"]
+        store_rate(conn, date, from_currency, to_currency, rate)
+        return rate
+
+    # Last fallback: use live rate — far more accurate than 1.0
+    live_rate = get_live_fx_rate(from_currency, to_currency)
+    if live_rate != 1.0:
+        store_rate(conn, date, from_currency, to_currency, live_rate)
+        return live_rate
+
+    return 1.0  # Absolute last resort
 
 
 def get_live_fx_rate(from_currency: str, to_currency: str) -> float:

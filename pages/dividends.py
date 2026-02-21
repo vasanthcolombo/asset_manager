@@ -58,7 +58,7 @@ for i, year in enumerate(all_years[:6]):
 # --- Dividends by Year bar chart ---
 st.subheader("Dividends by Year")
 year_div = df.groupby("Year")["Net (S$)"].sum().reset_index().sort_values("Year")
-year_div["Year"] = year_div["Year"].astype(str)  # string prevents fractional x-axis labels
+year_div["Year"] = year_div["Year"].astype(str)
 
 fig_year = px.bar(
     year_div,
@@ -71,7 +71,7 @@ fig_year.update_layout(
     height=350,
     margin=dict(l=0, r=0, t=40, b=0),
     showlegend=False,
-    xaxis=dict(type="category"),  # force categorical axis — no interpolation
+    xaxis=dict(type="category"),
 )
 st.plotly_chart(fig_year, use_container_width=True)
 
@@ -98,13 +98,28 @@ if not ticker_div.empty:
     )
     st.plotly_chart(fig_ticker, use_container_width=True)
     st.caption(f"Total net dividends in {selected_year}: **{fmt_currency(ticker_div['Net (S$)'].sum())}**")
-else:
-    st.info(f"No dividend records for {selected_year}.")
 
-# --- Detailed table ---
+# --- Detailed table with column filters ---
 st.subheader("Dividend Details")
-show_all = st.checkbox("Show all years", value=False)
-display_df = df if show_all else year_df
+
+filter_cols = st.columns(3)
+with filter_cols[0]:
+    ticker_options = sorted(df["Ticker"].unique())
+    filter_tickers = st.multiselect("Ticker", ticker_options, default=[])
+with filter_cols[1]:
+    year_options = sorted(df["Year"].unique(), reverse=True)
+    filter_years = st.multiselect("Year", year_options, default=[], format_func=str)
+with filter_cols[2]:
+    ccy_options = sorted(df["Currency"].unique())
+    filter_ccys = st.multiselect("Currency", ccy_options, default=[])
+
+display_df = df.copy()
+if filter_tickers:
+    display_df = display_df[display_df["Ticker"].isin(filter_tickers)]
+if filter_years:
+    display_df = display_df[display_df["Year"].isin(filter_years)]
+if filter_ccys:
+    display_df = display_df[display_df["Currency"].isin(filter_ccys)]
 
 if not display_df.empty:
     st.dataframe(
@@ -124,4 +139,4 @@ if not display_df.empty:
     total_net_sgd = display_df["Net (S$)"].sum()
     st.markdown(f"**Total Net Dividends (S$): {fmt_currency(total_net_sgd)}**")
 else:
-    st.info("No dividend records for the selected period.")
+    st.info("No dividend records match the selected filters.")

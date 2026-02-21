@@ -1,10 +1,10 @@
 """Dividend fetching, withholding tax calculation, and SGD conversion."""
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 from services.market_data import get_dividends, get_ticker_info
-from services.fx_service import get_fx_rate
+from services.fx_service import get_fx_rate, prefetch_fx_rates
 from config import WITHHOLDING_TAX_RATES, BASE_CURRENCY
 
 
@@ -40,6 +40,14 @@ def calculate_dividends_received(
     wht_rate = get_withholding_tax_rate(country)
     total_net_div_sgd = 0.0
     records = []
+
+    # Bulk-prefetch historical FX rates for the full dividend date range in one API call.
+    # This avoids slow per-date yfinance fetches and fills the cache before the loop below.
+    if currency.upper() != BASE_CURRENCY:
+        min_date = dividend_history.index.min()
+        min_date_str = min_date.strftime("%Y-%m-%d") if hasattr(min_date, "strftime") else str(min_date)[:10]
+        max_date_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        prefetch_fx_rates(conn, currency, BASE_CURRENCY, min_date_str, max_date_str)
 
     # Sort transactions by date for replay
     sorted_txns = sorted(transactions, key=lambda t: t["date"])

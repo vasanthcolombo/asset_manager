@@ -2,6 +2,7 @@
 
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 from datetime import datetime
 
 from services.cache import (
@@ -73,18 +74,27 @@ for i, bm in enumerate(selected_benchmarks):
 st.subheader("Portfolio vs Benchmarks")
 st.caption("Cumulative investment (filled), portfolio market value, and behavior-matched benchmark values — all on the same scale.")
 
-fingerprint = get_transaction_fingerprint(conn)
+# Include today's date in fingerprint so cache refreshes daily (fresh prices each day)
+today = datetime.now().strftime("%Y-%m-%d")
+fingerprint = get_transaction_fingerprint(conn) + f"_{today}"
 
 # Cumulative investment (fast, no cache needed — pure computation)
 inv_df = compute_investment_over_time(positions)
 
-# Portfolio value over time (DB cached)
+# Live portfolio value — always current (matches portfolio page)
+live_value_sgd = sum(p.current_value_sgd for p in positions)
+
+# Portfolio value over time (DB cached, refreshes daily)
 val_cache_key = f"portfolio_value_{freq_code}"
 with st.spinner("Loading portfolio value history..."):
     val_df = get_db_performance_cache(conn, val_cache_key, fingerprint)
     if val_df is None:
         val_df = compute_portfolio_value_over_time(conn, positions, freq=freq_code)
         if not val_df.empty:
+            # Append today's live value as the final data point
+            live_row = pd.DataFrame({"date": [pd.Timestamp(today)], "value_sgd": [live_value_sgd]})
+            val_df = pd.concat([val_df, live_row], ignore_index=True).drop_duplicates("date", keep="last")
+            val_df = val_df.sort_values("date").reset_index(drop=True)
             store_db_performance_cache(conn, val_cache_key, val_df, fingerprint)
 
 # Benchmark values (DB cached per benchmark)
