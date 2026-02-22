@@ -44,6 +44,29 @@ if view_mode == "By Broker":
 
 elif view_mode == "Custom Portfolio":
     portfolios = get_portfolios(conn)
+    portfolio_ids = [p["id"] for p in portfolios]
+
+    # Migrate away from old dict-based keys if still present
+    for _old_key in ("view_portfolio", "rule_portfolio"):
+        if _old_key in st.session_state:
+            del st.session_state[_old_key]
+
+    # -----------------------------------------------------------------------
+    # ID-based selection tracking (avoids dict-comparison desync after rerun)
+    # "cp_view_id"  → which portfolio to show in the view section
+    # "cp_edit_id"  → which portfolio is open in the edit expander
+    # -----------------------------------------------------------------------
+    def _resolve_id(key: str, fallback_id) -> int | None:
+        stored = st.session_state.get(key)
+        if stored in portfolio_ids:
+            return stored
+        # Stored ID was deleted or never set — fall back
+        st.session_state[key] = fallback_id
+        return fallback_id
+
+    default_id = portfolio_ids[0] if portfolio_ids else None
+    view_id  = _resolve_id("cp_view_id",  default_id)
+    edit_id  = _resolve_id("cp_edit_id",  default_id)
 
     # Management section
     with st.expander("Manage Custom Portfolios", expanded=not portfolios):
@@ -54,7 +77,10 @@ elif view_mode == "Custom Portfolio":
             if st.form_submit_button("Create Portfolio"):
                 if cp_name.strip():
                     try:
-                        create_portfolio(conn, cp_name.strip(), cp_desc)
+                        new_id = create_portfolio(conn, cp_name.strip(), cp_desc)
+                        # Auto-select the newly created portfolio in both panes
+                        st.session_state["cp_view_id"] = new_id
+                        st.session_state["cp_edit_id"] = new_id
                         st.success(f"Created portfolio: {cp_name}")
                         st.rerun()
                     except Exception as e:
@@ -64,12 +90,17 @@ elif view_mode == "Custom Portfolio":
         if portfolios:
             st.markdown("---")
             st.markdown("**Add Rules to Portfolio**")
+            edit_idx = portfolio_ids.index(edit_id) if edit_id in portfolio_ids else 0
             rule_portfolio = st.selectbox(
                 "Select portfolio to edit",
                 portfolios,
+                index=edit_idx,
                 format_func=lambda p: p["name"],
-                key="rule_portfolio",
+                key="rule_portfolio_sel",
             )
+            # Keep edit_id in sync with what the user picks
+            st.session_state["cp_edit_id"] = rule_portfolio["id"]
+
             if rule_portfolio:
                 existing_rules = get_rules(conn, rule_portfolio["id"])
                 if existing_rules:
@@ -90,33 +121,48 @@ elif view_mode == "Custom Portfolio":
                     st.markdown("")
                     if st.button("Add Rule"):
                         add_rule(conn, rule_portfolio["id"], rule_type, rule_value)
+                        # Sync view to the portfolio just edited
+                        st.session_state["cp_view_id"] = rule_portfolio["id"]
                         st.rerun()
 
                 btn_cols = st.columns(2)
                 with btn_cols[0]:
                     if st.button("Clear All Rules"):
                         clear_rules(conn, rule_portfolio["id"])
+                        st.session_state["cp_view_id"] = rule_portfolio["id"]
                         st.rerun()
                 with btn_cols[1]:
                     if st.button("Delete Portfolio"):
                         delete_portfolio(conn, rule_portfolio["id"])
+                        # Select the first remaining portfolio after deletion
+                        remaining = [p for p in portfolios if p["id"] != rule_portfolio["id"]]
+                        next_id = remaining[0]["id"] if remaining else None
+                        st.session_state["cp_view_id"] = next_id
+                        st.session_state["cp_edit_id"] = next_id
                         st.rerun()
 
-    # Select portfolio to view
+    # Select portfolio to view — index driven by cp_view_id
     if portfolios:
+        # Re-resolve after expander interactions may have updated session state
+        view_id = st.session_state.get("cp_view_id")
+        view_idx = portfolio_ids.index(view_id) if view_id in portfolio_ids else 0
+
         selected_portfolio = st.selectbox(
             "View Portfolio",
             portfolios,
+            index=view_idx,
             format_func=lambda p: p["name"],
-            key="view_portfolio",
+            key="cp_view_sel",
         )
-        if selected_portfolio:
-            filters = get_portfolio_filters(conn, selected_portfolio["id"])
-            brokers_filter = filters.get("brokers")
-            tickers_filter = filters.get("tickers")
-            if not brokers_filter and not tickers_filter:
-                st.warning("This portfolio has no rules defined. Add some above.")
-                st.stop()
+        # Keep cp_view_id in sync with user's manual selection
+        st.session_state["cp_view_id"] = selected_portfolio["id"]
+
+        filters = get_portfolio_filters(conn, selected_portfolio["id"])
+        brokers_filter = filters.get("brokers")
+        tickers_filter = filters.get("tickers")
+        if not brokers_filter and not tickers_filter:
+            st.warning("This portfolio has no rules defined. Add some above.")
+            st.stop()
     else:
         st.info("Create a custom portfolio above to get started.")
         st.stop()
