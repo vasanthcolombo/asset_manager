@@ -25,19 +25,18 @@ if "conn" not in st.session_state:
 
 # Define pages
 pages = {
-    "Overview": [
-        st.Page("pages/dashboard.py", title="Dashboard", icon="\U0001f3e0"),
+    "Portfolio Manager": [
+        st.Page("pages/dashboard.py",    title="Dashboard",    icon="🏠"),
+        st.Page("pages/transactions.py", title="Transactions", icon="📝"),
+        st.Page("pages/portfolio.py",    title="Portfolio",    icon="💼"),
+        st.Page("pages/performance.py",  title="Performance",  icon="📈"),
+        st.Page("pages/dividends.py",    title="Dividends",    icon="💰"),
+        st.Page("pages/stocks.py",       title="Watchlist",    icon="⭐"),
     ],
-    "Manage": [
-        st.Page("pages/transactions.py", title="Transactions", icon="\U0001f4dd"),
-        st.Page("pages/portfolio.py", title="Portfolio", icon="\U0001f4bc"),
-    ],
-    "Analyze": [
-        st.Page("pages/performance.py", title="Performance", icon="\U0001f4c8"),
-        st.Page("pages/dividends.py", title="Dividends", icon="\U0001f4b0"),
-    ],
-    "Research": [
-        st.Page("pages/stocks.py", title="Watchlist", icon="\u2b50"),
+    "Money Manager": [
+        st.Page("pages/mm_record.py",   title="Record",   icon="✏️"),
+        st.Page("pages/mm_stats.py",    title="Stats",    icon="📊"),
+        st.Page("pages/mm_accounts.py", title="Accounts", icon="🏦"),
     ],
 }
 
