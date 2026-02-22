@@ -191,20 +191,44 @@ total_pnl = total_realized + total_unrealized
 
 metric_cols = st.columns(6)
 with metric_cols[0]:
-    st.metric("Total Investment", fmt_currency(total_investment))
+    st.metric(
+        "Total Investment",
+        fmt_currency(total_investment),
+        help="Sum of all BUY costs ever made (qty × price), converted to SGD at today's FX rate. Includes positions that have since been sold — never decreases on sells.",
+    )
 with metric_cols[1]:
-    st.metric("Exposure", fmt_currency(total_cost_basis))
+    st.metric(
+        "Exposure",
+        fmt_currency(total_cost_basis),
+        help="Average cost of your currently held shares (open positions only), converted to SGD at today's FX rate. Decreases as you sell. Exposure = Avg Cost/Share × Shares.",
+    )
 with metric_cols[2]:
-    st.metric("Market Value", fmt_currency(total_value))
+    st.metric(
+        "Market Value",
+        fmt_currency(total_value),
+        help="Current live price × shares held for all open positions, converted to SGD at today's FX rate.",
+    )
 with metric_cols[3]:
-    st.metric("Realised P&L", fmt_currency(total_realized),
-              delta=f"{total_realized:+,.2f}")
+    st.metric(
+        "Realised P&L",
+        fmt_currency(total_realized),
+        delta=f"{total_realized:+,.2f}",
+        help="Profit/loss from completed trades (using average cost method) plus net dividends received after withholding tax, converted to SGD at today's FX rate.",
+    )
 with metric_cols[4]:
-    st.metric("Unrealised P&L", fmt_currency(total_unrealized),
-              delta=f"{total_unrealized:+,.2f}")
+    st.metric(
+        "Unrealised P&L",
+        fmt_currency(total_unrealized),
+        delta=f"{total_unrealized:+,.2f}",
+        help="Market Value minus Exposure for all open positions. This is the paper gain/loss on shares you still hold.",
+    )
 with metric_cols[5]:
-    st.metric("Total P&L", fmt_currency(total_pnl),
-              delta=f"{total_pnl:+,.2f}")
+    st.metric(
+        "Total P&L",
+        fmt_currency(total_pnl),
+        delta=f"{total_pnl:+,.2f}",
+        help="Realised P&L + Unrealised P&L. Represents the complete picture of gains and losses across all open and closed positions.",
+    )
 
 # Display table
 st.dataframe(
@@ -237,15 +261,31 @@ summary_cols = st.columns(4)
 total_div_current = sum(p.dividends_for_year(current_year) for p in positions)
 total_div_prev = sum(p.dividends_for_year(current_year - 1) for p in positions)
 with summary_cols[0]:
-    st.metric(f"Dividends {current_year}", fmt_currency(total_div_current))
+    st.metric(
+        f"Dividends {current_year}",
+        fmt_currency(total_div_current),
+        help=f"Net dividends received in {current_year} after withholding tax (US 30%, SG/HK 0%, etc.), converted to SGD at the FX rate on each ex-dividend date.",
+    )
 with summary_cols[1]:
-    st.metric(f"Dividends {current_year - 1}", fmt_currency(total_div_prev))
+    st.metric(
+        f"Dividends {current_year - 1}",
+        fmt_currency(total_div_prev),
+        help=f"Net dividends received in {current_year - 1} after withholding tax, converted to SGD at the FX rate on each ex-dividend date.",
+    )
 with summary_cols[2]:
     pct_return = (total_pnl / total_investment * 100) if total_investment > 0 else 0
-    st.metric("Return %", f"{pct_return:+.2f}%")
+    st.metric(
+        "Return %",
+        f"{pct_return:+.2f}%",
+        help="Total P&L ÷ Total Investment. Includes realised gains, unrealised gains, and dividends across all open and closed positions.",
+    )
 with summary_cols[3]:
     active_positions = sum(1 for p in positions if p.shares > 0)
-    st.metric("Active Positions", str(active_positions))
+    st.metric(
+        "Active Positions",
+        str(active_positions),
+        help="Number of positions where you currently hold shares (shares > 0). Excludes fully sold positions.",
+    )
 
 # --- View Chart ---
 st.markdown("---")

@@ -59,16 +59,32 @@ total_return_pct = (total_pnl / total_investment * 100) if total_investment > 0 
 
 cols = st.columns(3 + len(selected_benchmarks))
 with cols[0]:
-    st.metric("Total Return", fmt_pct(total_return_pct))
+    st.metric(
+        "Total Return",
+        fmt_pct(total_return_pct),
+        help="Total P&L ÷ Total Investment. Includes all realised gains, unrealised gains, and dividends (after withholding tax) across every position — open and closed.",
+    )
 with cols[1]:
     xirr_display = fmt_pct(portfolio_xirr * 100) if portfolio_xirr is not None else "N/A"
-    st.metric("Portfolio XIRR", xirr_display)
+    st.metric(
+        "Portfolio XIRR",
+        xirr_display,
+        help="Annualised Internal Rate of Return, accounting for the timing and size of each cash flow. BUYs are negative flows, SELLs and dividends are positive flows, and today's market value is the terminal flow.",
+    )
 with cols[2]:
-    st.metric("Total P&L (S$)", fmt_currency(total_pnl))
+    st.metric(
+        "Total P&L (S$)",
+        fmt_currency(total_pnl),
+        help="Realised P&L (closed trades + dividends after WHT) plus Unrealised P&L (Market Value − Exposure) for all open positions, converted to SGD at today's FX rate.",
+    )
 for i, bm in enumerate(selected_benchmarks):
     with cols[3 + i]:
         bm_xirr = benchmark_xirrs.get(bm)
-        st.metric(f"{DEFAULT_BENCHMARKS[bm]} XIRR", fmt_pct(bm_xirr * 100) if bm_xirr else "N/A")
+        st.metric(
+            f"{DEFAULT_BENCHMARKS[bm]} XIRR",
+            fmt_pct(bm_xirr * 100) if bm_xirr else "N/A",
+            help=f"Behaviour-matched XIRR for {DEFAULT_BENCHMARKS[bm]}: the same SGD amounts invested on the same dates as your BUYs/SELLs, but into {bm} instead. A fair apples-to-apples comparison against your portfolio.",
+        )
 
 # --- Combined Chart ---
 st.subheader("Portfolio vs Benchmarks")
