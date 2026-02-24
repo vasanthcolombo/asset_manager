@@ -91,24 +91,35 @@ def get_live_price(conn: sqlite3.Connection, ticker: str) -> dict:
     if cached:
         return {"price": cached["price"], "currency": cached["currency"], "error": None}
 
+    meta = get_ticker_info(conn, ticker)
+    currency = meta.get("currency", "USD")
+
     try:
         t = yf.Ticker(ticker)
-        fi = t.fast_info
-        price = fi.get("lastPrice", None)
-        if price is None:
-            # Fallback to slower .info only if fast_info failed
-            info = t.info
-            price = info.get("currentPrice") or info.get("regularMarketPrice") or 0.0
 
-        meta = get_ticker_info(conn, ticker)
-        currency = meta.get("currency", "USD")
+        # fast_info uses attribute access (not .get()) in yfinance >= 0.2.x
+        price = getattr(t.fast_info, "last_price", None)
 
-        store_price(conn, ticker, price, currency)
+        if not price:
+            # Fallback 1: .info dict
+            try:
+                info = t.info
+                price = info.get("currentPrice") or info.get("regularMarketPrice")
+            except Exception:
+                price = None
+
+        if not price:
+            # Fallback 2: recent history — always works even when market is closed
+            hist = t.history(period="5d")
+            if not hist.empty and "Close" in hist.columns:
+                price = float(hist["Close"].dropna().iloc[-1])
+
+        price = float(price) if price else 0.0
+        if price > 0:
+            store_price(conn, ticker, price, currency)
         return {"price": price, "currency": currency, "error": None}
     except Exception as e:
-        # Even on error, use suffix-detected currency
-        meta = get_ticker_info(conn, ticker)
-        return {"price": 0.0, "currency": meta.get("currency", "USD"), "error": str(e)}
+        return {"price": 0.0, "currency": currency, "error": str(e)}
 
 
 def get_live_prices_batch(conn: sqlite3.Connection, tickers: list[str]) -> dict[str, dict]:
@@ -128,34 +139,35 @@ def get_live_prices_batch(conn: sqlite3.Connection, tickers: list[str]) -> dict[
     if not uncached:
         return results
 
-    # Batch download all uncached tickers in one API call
+    def _extract_price(df: "pd.DataFrame", ticker: str) -> float | None:
+        """Extract latest close price from a yf.download DataFrame (single or multi-ticker)."""
+        try:
+            if isinstance(df.columns, pd.MultiIndex):
+                col = df["Close"][ticker].dropna()
+            else:
+                col = df["Close"].dropna()
+            return float(col.iloc[-1]) if not col.empty else None
+        except Exception:
+            return None
+
+    # Batch download with period="5d" to ensure data is available across timezones
     try:
-        df = yf.download(uncached, period="1d", progress=False, threads=True)
+        df = yf.download(uncached, period="5d", progress=False, threads=True, auto_adjust=True)
         if df.empty:
             raise ValueError("Empty result")
 
-        if len(uncached) == 1:
-            # Single ticker: df has simple columns
-            ticker = uncached[0]
-            price = float(df["Close"].iloc[-1]) if "Close" in df.columns and len(df) > 0 else 0.0
+        for ticker in uncached:
+            price = _extract_price(df, ticker)
             meta = get_ticker_info(conn, ticker)
             currency = meta.get("currency", "USD")
-            store_price(conn, ticker, price, currency)
-            results[ticker] = {"price": price, "currency": currency, "error": None}
-        else:
-            # Multi-ticker: df has MultiIndex columns (metric, ticker)
-            for ticker in uncached:
-                try:
-                    price = float(df["Close"][ticker].iloc[-1])
-                    meta = get_ticker_info(conn, ticker)
-                    currency = meta.get("currency", "USD")
-                    store_price(conn, ticker, price, currency)
-                    results[ticker] = {"price": price, "currency": currency, "error": None}
-                except Exception:
-                    meta = get_ticker_info(conn, ticker)
-                    results[ticker] = {"price": 0.0, "currency": meta.get("currency", "USD"), "error": "No data"}
+            if price and price > 0:
+                store_price(conn, ticker, price, currency)
+                results[ticker] = {"price": price, "currency": currency, "error": None}
+            else:
+                # NaN or missing for this ticker — fall back individually
+                results[ticker] = get_live_price(conn, ticker)
     except Exception:
-        # Fallback to individual fetches
+        # Entire batch failed — fall back to individual fetches
         for ticker in uncached:
             results[ticker] = get_live_price(conn, ticker)
 
