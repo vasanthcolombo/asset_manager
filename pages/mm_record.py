@@ -6,16 +6,19 @@ from datetime import date
 
 from models.mm_account import get_accounts, get_account_groups, create_account, create_account_group
 from models.mm_category import get_categories, create_category, delete_category
+from models.mm_settings import get_mm_setting
 from models.mm_transaction import (
     insert_mm_transaction,
     get_mm_transactions,
     delete_mm_transaction,
 )
 from services.fx_service import get_live_fx_rate
+from services.mm_service import amount_in_default
 
 st.header("Record Transaction")
 
 conn = st.session_state.conn
+default_ccy = get_mm_setting(conn, "default_currency", "SGD")
 
 # ── Transaction Type ──────────────────────────────────────────────────────────
 txn_type = st.radio(
@@ -34,7 +37,7 @@ if not accounts:
 account_labels = {f"{a['name']} ({a['group_name']})": a["id"] for a in accounts}
 
 categories = get_categories(conn, type_=txn_type if txn_type != "TRANSFER" else None)
-# Build grouped display: "Parent > Child" or just "Name"
+
 def _cat_label(c: dict) -> str:
     if c["parent_id"]:
         parent = next((p["name"] for p in categories if p["id"] == c["parent_id"]), "")
@@ -56,16 +59,18 @@ with st.form("mm_record_form", clear_on_submit=True):
     with row1[2]:
         if txn_type == "TRANSFER":
             to_account_label = st.selectbox("To Account", list(account_labels.keys()))
+            sel_cat_label = None
         else:
             if cat_options:
                 sel_cat_label = st.selectbox("Category", list(cat_options.keys()))
             else:
                 sel_cat_label = None
                 st.warning("No categories found.")
+            to_account_label = None
     with row1[3]:
         amount = st.number_input("Amount", min_value=0.01, step=10.0, format="%.2f")
     with row1[4]:
-        currency = st.text_input("Currency", value="SGD").strip().upper() or "SGD"
+        currency = st.text_input("Currency", value=default_ccy).strip().upper() or default_ccy
 
     notes = st.text_input("Notes (optional)")
 
@@ -83,8 +88,7 @@ with st.form("mm_record_form", clear_on_submit=True):
         if txn_type == "TRANSFER" and account_id == to_account_id:
             st.error("From and To accounts must be different.")
         else:
-            # Cache FX rate at time of entry
-            fx = 1.0 if currency == "SGD" else get_live_fx_rate(currency, "SGD")
+            fx = 1.0 if currency == default_ccy else get_live_fx_rate(currency, default_ccy)
 
             txn = {
                 "date": txn_date.strftime("%Y-%m-%d"),
@@ -99,7 +103,12 @@ with st.form("mm_record_form", clear_on_submit=True):
             }
             try:
                 insert_mm_transaction(conn, txn)
-                st.success(f"{txn_type.title()} of {currency} {amount:,.2f} recorded.")
+                default_eq = amount * fx
+                st.success(
+                    f"{txn_type.title()} of {currency} {amount:,.2f}"
+                    + (f" ({default_ccy} {default_eq:,.2f})" if currency != default_ccy else "")
+                    + " recorded."
+                )
                 st.rerun()
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -112,10 +121,12 @@ recent = get_mm_transactions(conn, limit=20)
 if recent:
     rows = []
     for t in recent:
-        amount_str = f"{t['currency']} {t['amount']:,.2f}"
-        if t["currency"] != "SGD" and t.get("fx_rate_to_default"):
-            sgd_val = t["amount"] * t["fx_rate_to_default"]
-            amount_str += f"  (S${sgd_val:,.2f})"
+        native_str = f"{t['currency']} {t['amount']:,.2f}"
+        default_val = amount_in_default(
+            t["amount"], t["currency"], t.get("fx_rate_to_default"), default_ccy
+        )
+        default_str = f"{default_ccy} {default_val:,.2f}" if t["currency"] != default_ccy else "—"
+
         rows.append({
             "ID": t["id"],
             "Date": t["date"],
@@ -123,16 +134,17 @@ if recent:
             "Account": t["account_name"],
             "To Account": t.get("to_account_name") or "",
             "Category": t.get("category_name") or "",
-            "Amount": amount_str,
+            "Amount": native_str,
+            default_ccy: default_str,
             "Notes": t.get("notes") or "",
         })
     df = pd.DataFrame(rows)
     st.dataframe(df.drop(columns=["ID"]), use_container_width=True, hide_index=True)
 
-    # Delete row
     with st.expander("Delete a Transaction"):
         labels = [
-            f"#{t['id']} | {t['date']} | {t['type']} | {t['account_name']} | {t['currency']} {t['amount']:,.2f}"
+            f"#{t['id']} | {t['date']} | {t['type']} | {t['account_name']} | "
+            f"{t['currency']} {t['amount']:,.2f}"
             for t in recent
         ]
         sel_label = st.selectbox("Select transaction to delete", labels)
@@ -156,7 +168,6 @@ with st.expander("Manage Categories"):
         with c_cols[1]:
             new_cat_type = st.selectbox("Type", ["EXPENSE", "INCOME"])
         with c_cols[2]:
-            # Parent categories (top-level only)
             parent_cats = [c for c in get_categories(conn, type_=new_cat_type) if c["parent_id"] is None]
             parent_opts = {"— None (top-level) —": None} | {c["name"]: c["id"] for c in parent_cats}
             sel_parent = st.selectbox("Parent Category (optional)", list(parent_opts.keys()))
@@ -195,14 +206,14 @@ with st.expander("Manage Accounts"):
         with qa_cols[1]:
             qa_group = st.selectbox("Group", list(grp_opts.keys()), key="qa_group")
         with qa_cols[2]:
-            qa_currency = st.text_input("Currency", value="SGD", key="qa_currency")
+            qa_currency = st.text_input("Currency", value=default_ccy, key="qa_currency")
         with qa_cols[3]:
             qa_balance = st.number_input("Opening Balance", value=0.0, step=100.0, key="qa_balance")
         if st.form_submit_button("Create Account"):
             if qa_name.strip():
                 try:
                     create_account(conn, grp_opts[qa_group], qa_name.strip(),
-                                   qa_currency.strip().upper() or "SGD", qa_balance)
+                                   qa_currency.strip().upper() or default_ccy, qa_balance)
                     st.success(f"Created: {qa_name}")
                     st.rerun()
                 except Exception as e:

@@ -161,6 +161,12 @@ TABLES = [
     "CREATE INDEX IF NOT EXISTS idx_mm_txn_date    ON mm_transactions(date)",
     "CREATE INDEX IF NOT EXISTS idx_mm_txn_account ON mm_transactions(account_id)",
     "CREATE INDEX IF NOT EXISTS idx_mm_txn_type    ON mm_transactions(type)",
+    """
+    CREATE TABLE IF NOT EXISTS mm_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
 ]
 
 _MM_ACCOUNT_GROUPS = [
@@ -191,7 +197,7 @@ _MM_CATEGORIES = [
 
 
 def _seed_mm_defaults(conn: sqlite3.Connection) -> None:
-    """Insert predefined Money Manager account groups and categories (idempotent)."""
+    """Insert predefined Money Manager account groups, categories, and settings (idempotent)."""
     conn.executemany(
         "INSERT OR IGNORE INTO mm_account_groups (name, group_type, is_predefined, sort_order) VALUES (?,?,?,?)",
         _MM_ACCOUNT_GROUPS,
@@ -200,6 +206,7 @@ def _seed_mm_defaults(conn: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO mm_categories (name, type, is_predefined) VALUES (?,?,?)",
         _MM_CATEGORIES,
     )
+    conn.execute("INSERT OR IGNORE INTO mm_settings (key, value) VALUES ('default_currency', 'SGD')")
     conn.commit()
 
 

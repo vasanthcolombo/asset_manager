@@ -8,40 +8,58 @@ from models.mm_account import (
     create_account_group,
     delete_account,
     delete_account_group,
-    update_account,
 )
+from models.mm_settings import get_mm_setting, set_mm_setting
 from models.transaction import get_distinct_brokers
-from services.mm_service import get_account_balance, get_account_balance_sgd, get_net_worth
+from services.mm_service import get_account_balance, get_account_balance_in, get_net_worth
 from services.cache import get_cached_portfolio
-from utils.formatters import fmt_currency
+from services.fx_service import get_live_fx_rate
 
 st.header("Accounts")
 
 conn = st.session_state.conn
 
+# ── Default Currency Selector ─────────────────────────────────────────────────
+_COMMON_CURRENCIES = ["SGD", "USD", "EUR", "GBP", "AUD", "HKD", "JPY", "MYR", "INR", "AED"]
+default_ccy = get_mm_setting(conn, "default_currency", "SGD")
+
+top_row = st.columns([6, 2])
+with top_row[1]:
+    new_ccy = st.selectbox(
+        "Default Currency",
+        _COMMON_CURRENCIES,
+        index=_COMMON_CURRENCIES.index(default_ccy) if default_ccy in _COMMON_CURRENCIES else 0,
+        key="mm_default_ccy_sel",
+        help="All balances and stats are shown in this currency.",
+    )
+    if new_ccy != default_ccy:
+        set_mm_setting(conn, "default_currency", new_ccy)
+        default_ccy = new_ccy
+        st.rerun()
+
 # ── Net Worth Banner ──────────────────────────────────────────────────────────
 with st.spinner("Computing net worth..."):
-    nw = get_net_worth(conn)
+    nw = get_net_worth(conn, default_ccy)
 
 nw_cols = st.columns(3)
 with nw_cols[0]:
     st.metric(
         "Total Assets",
-        fmt_currency(nw["total_assets"]),
-        help="Sum of all ASSET account balances converted to SGD.",
+        f"{default_ccy} {nw['total_assets']:,.2f}",
+        help="Sum of all ASSET account balances.",
     )
 with nw_cols[1]:
     st.metric(
         "Total Liabilities",
-        fmt_currency(nw["total_liabilities"]),
-        help="Sum of all LIABILITY account balances (credit cards, loans, etc.) in SGD.",
+        f"{default_ccy} {nw['total_liabilities']:,.2f}",
+        help="Sum of all LIABILITY account balances.",
     )
 with nw_cols[2]:
     st.metric(
         "Net Worth",
-        fmt_currency(nw["net_worth"]),
+        f"{default_ccy} {nw['net_worth']:,.2f}",
         delta=f"{nw['net_worth']:+,.0f}",
-        help="Total Assets minus Total Liabilities, in SGD.",
+        help="Total Assets minus Total Liabilities.",
     )
 
 st.divider()
@@ -55,26 +73,37 @@ for a in accounts:
 
 for group in groups:
     group_accs = acc_by_group.get(group["id"], [])
-    group_total = sum(get_account_balance_sgd(conn, a["id"]) for a in group_accs if a["is_active"])
-    label = f"{'🏦' if group['group_type'] == 'ASSET' else '💳'} {group['name']}  —  {fmt_currency(group_total)}"
+    active_accs = [a for a in group_accs if a["is_active"]]
+    group_total = sum(
+        get_account_balance_in(conn, a["id"], default_ccy) for a in active_accs
+    )
+    icon = "🏦" if group["group_type"] == "ASSET" else "💳"
+    label = f"{icon} {group['name']}  —  {default_ccy} {group_total:,.2f}"
 
-    with st.expander(label, expanded=bool(group_accs)):
+    with st.expander(label, expanded=bool(active_accs)):
         if group_accs:
+            hdr = st.columns([3, 2, 2, 1])
+            hdr[0].markdown("**Account**")
+            hdr[1].markdown(f"**Native Balance**")
+            hdr[2].markdown(f"**{default_ccy} Equivalent**")
+
             for acc in group_accs:
                 bal_native = get_account_balance(conn, acc["id"])
-                bal_sgd = get_account_balance_sgd(conn, acc["id"])
-                native_str = f"{acc['currency']} {bal_native:,.2f}" if acc["currency"] != "SGD" else ""
+                bal_default = get_account_balance_in(conn, acc["id"], default_ccy)
+                native_str = f"{acc['currency']} {bal_native:,.2f}"
 
-                col_name, col_native, col_sgd, col_del = st.columns([3, 2, 2, 1])
+                col_name, col_native, col_default, col_del = st.columns([3, 2, 2, 1])
                 with col_name:
                     status = "" if acc["is_active"] else " *(inactive)*"
                     broker_tag = f"  🔗 {acc['broker_name']}" if acc.get("broker_name") else ""
                     st.markdown(f"**{acc['name']}**{broker_tag}{status}")
                 with col_native:
-                    if native_str:
-                        st.caption(native_str)
-                with col_sgd:
-                    st.markdown(fmt_currency(bal_sgd))
+                    st.text(native_str)
+                with col_default:
+                    if acc["currency"] != default_ccy:
+                        st.text(f"{default_ccy} {bal_default:,.2f}")
+                    else:
+                        st.text("—")
                 with col_del:
                     if st.button("✕", key=f"del_acc_{acc['id']}", help="Delete account"):
                         delete_account(conn, acc["id"])
@@ -85,14 +114,21 @@ for group in groups:
                     try:
                         positions = get_cached_portfolio(conn)
                         broker_upper = acc["broker_name"].upper()
-                        port_val = sum(
+                        port_val_sgd = sum(
                             p.current_value_sgd for p in positions
                             if p.broker.upper() == broker_upper and p.shares > 0
                         )
-                        cash_bal = bal_sgd - port_val
+                        # Convert portfolio value to default currency
+                        if default_ccy == "SGD":
+                            port_val = port_val_sgd
+                            cash_val = bal_default - port_val
+                        else:
+                            rate = get_live_fx_rate("SGD", default_ccy)
+                            port_val = port_val_sgd * rate
+                            cash_val = bal_default - port_val
                         st.caption(
-                            f"  Cash: {fmt_currency(cash_bal)}  |  "
-                            f"Portfolio: {fmt_currency(port_val)}"
+                            f"  Cash: {default_ccy} {cash_val:,.2f}  |  "
+                            f"Portfolio: {default_ccy} {port_val:,.2f}"
                         )
                     except Exception:
                         pass
@@ -117,16 +153,15 @@ with st.expander("Add New Account"):
             group_opts = {g["name"]: g["id"] for g in groups}
             sel_group_name = st.selectbox("Account Group", list(group_opts.keys()))
         with f_cols[2]:
-            acc_currency = st.text_input("Currency", value="SGD")
+            acc_currency = st.text_input("Currency", value=default_ccy)
         with f_cols[3]:
             acc_init_bal = st.number_input("Opening Balance", value=0.0, step=100.0, format="%.2f")
 
-        # Broker link — only relevant for Investment group
         all_brokers = get_distinct_brokers(conn)
         broker_link = st.selectbox(
             "Link to Portfolio Broker (optional)",
             ["— None —"] + all_brokers,
-            help="Investment accounts only: links this account to a broker in the Portfolio Manager so the balance includes portfolio market value.",
+            help="Investment accounts only: balance includes portfolio market value for this broker.",
         )
 
         if st.form_submit_button("Create Account", use_container_width=True):
@@ -136,7 +171,7 @@ with st.expander("Add New Account"):
                         conn,
                         group_id=group_opts[sel_group_name],
                         name=acc_name.strip(),
-                        currency=acc_currency.strip().upper() or "SGD",
+                        currency=acc_currency.strip().upper() or default_ccy,
                         initial_balance=acc_init_bal,
                         broker_name=broker_link if broker_link != "— None —" else None,
                     )

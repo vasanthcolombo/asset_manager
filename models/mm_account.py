@@ -58,6 +58,20 @@ def get_accounts(
     return [dict(r) for r in rows]
 
 
+def get_account_by_name(conn: sqlite3.Connection, name: str) -> dict | None:
+    """Case-insensitive lookup of an account by name."""
+    row = conn.execute(
+        """
+        SELECT a.*, g.name AS group_name, g.group_type
+        FROM mm_accounts a
+        JOIN mm_account_groups g ON g.id = a.group_id
+        WHERE LOWER(a.name) = LOWER(?)
+        """,
+        (name.strip(),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def get_account_by_id(conn: sqlite3.Connection, account_id: int) -> dict | None:
     row = conn.execute(
         """

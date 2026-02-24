@@ -37,6 +37,7 @@ pages = {
         st.Page("pages/mm_record.py",   title="Record",   icon="✏️"),
         st.Page("pages/mm_stats.py",    title="Stats",    icon="📊"),
         st.Page("pages/mm_accounts.py", title="Accounts", icon="🏦"),
+        st.Page("pages/mm_import.py",   title="Import",   icon="📥"),
     ],
 }
 

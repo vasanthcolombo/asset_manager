@@ -8,12 +8,13 @@ from datetime import date, timedelta
 from calendar import monthrange
 
 from models.mm_account import get_accounts
+from models.mm_settings import get_mm_setting
 from services.mm_service import get_stats
-from utils.formatters import fmt_currency
 
 st.header("Stats")
 
 conn = st.session_state.conn
+default_ccy = get_mm_setting(conn, "default_currency", "SGD")
 
 # ── Period Selector ───────────────────────────────────────────────────────────
 today = date.today()
@@ -57,14 +58,14 @@ sel_accounts = st.multiselect("Filter by Account (optional)", acc_names, key="mm
 
 # ── Compute ───────────────────────────────────────────────────────────────────
 with st.spinner("Computing stats..."):
-    stats = get_stats(conn, date_from, date_to)
+    stats = get_stats(conn, date_from, date_to, default_ccy)
 
 income_data  = stats["income_by_category"]
 expense_data = stats["expense_by_category"]
 period_df    = stats["by_period"]
 
-total_income  = sum(r["amount_sgd"] for r in income_data)
-total_expense = sum(r["amount_sgd"] for r in expense_data)
+total_income  = sum(r["amount"] for r in income_data)
+total_expense = sum(r["amount"] for r in expense_data)
 net_flow      = total_income - total_expense
 
 # ── Summary Metrics ───────────────────────────────────────────────────────────
@@ -72,19 +73,19 @@ m_cols = st.columns(3)
 with m_cols[0]:
     st.metric(
         "Total Income",
-        fmt_currency(total_income),
-        help="Sum of all INCOME transactions in the selected period, converted to SGD.",
+        f"{default_ccy} {total_income:,.2f}",
+        help=f"Sum of all INCOME transactions in the selected period, converted to {default_ccy}.",
     )
 with m_cols[1]:
     st.metric(
         "Total Expenses",
-        fmt_currency(total_expense),
-        help="Sum of all EXPENSE transactions in the selected period, converted to SGD.",
+        f"{default_ccy} {total_expense:,.2f}",
+        help=f"Sum of all EXPENSE transactions in the selected period, converted to {default_ccy}.",
     )
 with m_cols[2]:
     st.metric(
         "Net Cash Flow",
-        fmt_currency(net_flow),
+        f"{default_ccy} {net_flow:,.2f}",
         delta=f"{net_flow:+,.0f}",
         help="Income minus Expenses for the selected period.",
     )
@@ -101,7 +102,7 @@ def _make_donut(data: list[dict], title: str, color_seq=None) -> go.Figure:
     df = pd.DataFrame(data)
     fig = px.pie(
         df,
-        values="amount_sgd",
+        values="amount",
         names="category",
         hole=0.4,
         color_discrete_sequence=color_seq,
@@ -110,7 +111,7 @@ def _make_donut(data: list[dict], title: str, color_seq=None) -> go.Figure:
     fig.update_traces(
         textposition="inside",
         textinfo="percent+label",
-        hovertemplate="<b>%{label}</b><br>S$%{value:,.2f}<br>%{percent}<extra></extra>",
+        hovertemplate=f"<b>%{{label}}</b><br>{default_ccy} %{{value:,.2f}}<br>%{{percent}}<extra></extra>",
     )
     fig.update_layout(
         height=340,
