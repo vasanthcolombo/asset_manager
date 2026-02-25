@@ -5,11 +5,72 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date, timedelta
-from calendar import monthrange
 
-from models.mm_account import get_accounts
+from models.mm_account import get_account_groups, get_accounts
 from models.mm_settings import get_mm_setting
-from services.mm_service import get_stats
+from models.mm_transaction import get_mm_transactions
+from services.mm_service import amount_in_default
+
+
+# ── Two-level account picker (popover → expanders → checkboxes) ───────────────
+
+def _account_filter_widget(key_prefix: str, all_groups: list, all_accounts: list) -> set[int]:
+    """
+    Render a two-level account selector:
+      Level 1 — Account Groups (collapsible expanders inside a popover)
+      Level 2 — Individual accounts (checkboxes inside each group expander)
+
+    Returns the set of selected account IDs (empty set = all accounts).
+    """
+    # Build group → sorted-accounts map (skip empty groups)
+    grp_map: dict[str, list] = {}
+    for g in all_groups:
+        accs = sorted(
+            [a for a in all_accounts if a["group_name"] == g["name"]],
+            key=lambda x: x["name"],
+        )
+        if accs:
+            grp_map[g["name"]] = accs
+
+    # Derive current selection from checkbox session-state keys
+    sel_ids: set[int] = {
+        a["id"]
+        for accs in grp_map.values()
+        for a in accs
+        if st.session_state.get(f"{key_prefix}_{a['id']}", False)
+    }
+
+    # Compose the popover button label
+    if sel_ids:
+        names = [a["name"] for a in all_accounts if a["id"] in sel_ids]
+        btn_label = ", ".join(names[:2]) + (f"  +{len(names) - 2} more" if len(names) > 2 else "")
+    else:
+        btn_label = "All accounts  ▾"
+
+    with st.popover(btn_label, use_container_width=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Clear all", key=f"{key_prefix}_clear", use_container_width=True):
+                for accs in grp_map.values():
+                    for a in accs:
+                        st.session_state[f"{key_prefix}_{a['id']}"] = False
+                st.rerun()
+        with c2:
+            if st.button("Select all", key=f"{key_prefix}_selall", use_container_width=True):
+                for accs in grp_map.values():
+                    for a in accs:
+                        st.session_state[f"{key_prefix}_{a['id']}"] = True
+                st.rerun()
+
+        for g_name, accs in grp_map.items():
+            n_sel = sum(1 for a in accs if st.session_state.get(f"{key_prefix}_{a['id']}", False))
+            exp_label = f"{g_name}  ({n_sel}/{len(accs)} selected)" if n_sel else g_name
+            with st.expander(exp_label, expanded=(n_sel > 0)):
+                for a in accs:
+                    st.checkbox(a["name"], key=f"{key_prefix}_{a['id']}")
+
+    return sel_ids
+
 
 st.header("Stats")
 
@@ -23,12 +84,11 @@ period_mode = st.radio(
     "Period",
     ["This Week", "This Month", "This Year", "Custom"],
     horizontal=True,
-    index=1,  # default: This Month
+    index=1,
     key="mm_stats_period",
 )
 
 if period_mode == "This Week":
-    # Monday–Sunday of current week
     start = today - timedelta(days=today.weekday())
     end = today
 elif period_mode == "This Month":
@@ -51,18 +111,48 @@ else:
 date_from = start.strftime("%Y-%m-%d")
 date_to   = end.strftime("%Y-%m-%d")
 
-# Optional account filter
-accounts = get_accounts(conn, active_only=True)
-acc_names = [f"{a['name']} ({a['group_name']})" for a in accounts]
-sel_accounts = st.multiselect("Filter by Account (optional)", acc_names, key="mm_stats_accs")
+# ── Two-level Account Filter ──────────────────────────────────────────────────
+all_groups   = get_account_groups(conn)
+all_accounts = get_accounts(conn, active_only=False)
 
-# ── Compute ───────────────────────────────────────────────────────────────────
-with st.spinner("Computing stats..."):
-    stats = get_stats(conn, date_from, date_to, default_ccy)
+st.caption("Account")
+sel_acc_ids = _account_filter_widget("top_accs", all_groups, all_accounts)
 
-income_data  = stats["income_by_category"]
-expense_data = stats["expense_by_category"]
-period_df    = stats["by_period"]
+# ── Fetch & filter transactions ───────────────────────────────────────────────
+all_txns = get_mm_transactions(conn, date_from=date_from, date_to=date_to)
+txns = [t for t in all_txns if not sel_acc_ids or t["account_id"] in sel_acc_ids]
+
+# ── Aggregate for charts ──────────────────────────────────────────────────────
+income_cat: dict[str, float] = {}
+expense_cat: dict[str, float] = {}
+period_rows: dict[str, dict] = {}
+
+for t in txns:
+    if t["type"] == "TRANSFER":
+        continue
+    amt = amount_in_default(
+        t["amount"], t["currency"], t.get("fx_rate_to_default"), default_ccy
+    )
+    cat    = t.get("category_name") or "Uncategorized"
+    period = t["date"][:7]
+    if period not in period_rows:
+        period_rows[period] = {"period": period, "income": 0.0, "expense": 0.0}
+    if t["type"] == "INCOME":
+        income_cat[cat] = income_cat.get(cat, 0.0) + amt
+        period_rows[period]["income"] += amt
+    elif t["type"] == "EXPENSE":
+        expense_cat[cat] = expense_cat.get(cat, 0.0) + amt
+        period_rows[period]["expense"] += amt
+
+income_data  = [{"category": k, "amount": v} for k, v in sorted(income_cat.items(),  key=lambda x: -x[1]) if v > 0]
+expense_data = [{"category": k, "amount": v} for k, v in sorted(expense_cat.items(), key=lambda x: -x[1]) if v > 0]
+
+if period_rows:
+    period_df = pd.DataFrame(sorted(period_rows.values(), key=lambda r: r["period"]))
+    period_df["net"] = period_df["income"] - period_df["expense"]
+    period_df["cumulative_net"] = period_df["net"].cumsum()
+else:
+    period_df = pd.DataFrame(columns=["period", "income", "expense", "net", "cumulative_net"])
 
 total_income  = sum(r["amount"] for r in income_data)
 total_expense = sum(r["amount"] for r in expense_data)
@@ -97,72 +187,54 @@ def _make_donut(data: list[dict], title: str, color_seq=None) -> go.Figure:
     if not data:
         fig = go.Figure()
         fig.add_annotation(text="No data", showarrow=False, font_size=14)
-        fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
+        fig.update_layout(
+            title=title,
+            height=320,
+            margin=dict(l=10, r=10, t=40, b=10),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+        )
         return fig
     df = pd.DataFrame(data)
     fig = px.pie(
-        df,
-        values="amount",
-        names="category",
-        hole=0.4,
-        color_discrete_sequence=color_seq,
-        title=title,
+        df, values="amount", names="category", hole=0.4,
+        color_discrete_sequence=color_seq, title=title,
     )
     fig.update_traces(
-        textposition="inside",
-        textinfo="percent+label",
+        textposition="inside", textinfo="percent+label",
         hovertemplate=f"<b>%{{label}}</b><br>{default_ccy} %{{value:,.2f}}<br>%{{percent}}<extra></extra>",
     )
     fig.update_layout(
-        height=340,
-        margin=dict(l=10, r=10, t=40, b=40),
+        height=340, margin=dict(l=10, r=10, t=40, b=40),
         hoverlabel=dict(bgcolor="white", bordercolor="gray", font_size=13),
         showlegend=False,
     )
     return fig
 
 row1_col1, row1_col2 = st.columns(2)
-
 with row1_col1:
-    fig_exp = _make_donut(
-        expense_data,
-        "Expenses by Category",
-        color_seq=px.colors.qualitative.Set2,
+    st.plotly_chart(
+        _make_donut(expense_data, "Expenses by Category", px.colors.qualitative.Set2),
+        use_container_width=True,
     )
-    st.plotly_chart(fig_exp, use_container_width=True)
-
 with row1_col2:
-    fig_inc = _make_donut(
-        income_data,
-        "Income by Category",
-        color_seq=px.colors.qualitative.Pastel,
+    st.plotly_chart(
+        _make_donut(income_data, "Income by Category", px.colors.qualitative.Pastel),
+        use_container_width=True,
     )
-    st.plotly_chart(fig_inc, use_container_width=True)
 
-# ── Income vs Expenses Bar Chart ──────────────────────────────────────────────
 row2_col1, row2_col2 = st.columns(2)
 
 with row2_col1:
     if not period_df.empty:
         fig_bar = go.Figure()
-        fig_bar.add_trace(go.Bar(
-            x=period_df["period"],
-            y=period_df["income"],
-            name="Income",
-            marker_color="#2ca02c",
-        ))
-        fig_bar.add_trace(go.Bar(
-            x=period_df["period"],
-            y=period_df["expense"],
-            name="Expenses",
-            marker_color="#d62728",
-        ))
+        fig_bar.add_trace(go.Bar(x=period_df["period"], y=period_df["income"],
+                                  name="Income", marker_color="#2ca02c"))
+        fig_bar.add_trace(go.Bar(x=period_df["period"], y=period_df["expense"],
+                                  name="Expenses", marker_color="#d62728"))
         fig_bar.update_layout(
-            title="Income vs Expenses by Month",
-            barmode="group",
-            height=340,
-            margin=dict(l=0, r=0, t=40, b=0),
-            yaxis_title="S$",
+            title="Income vs Expenses by Month", barmode="group", height=340,
+            margin=dict(l=0, r=0, t=40, b=0), yaxis_title=default_ccy,
             xaxis=dict(type="category"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
@@ -174,22 +246,16 @@ with row2_col2:
     if not period_df.empty:
         fig_net = go.Figure()
         fig_net.add_trace(go.Scatter(
-            x=period_df["period"],
-            y=period_df["cumulative_net"],
-            mode="lines+markers",
-            name="Cumulative Net",
-            fill="tozeroy",
-            fillcolor="rgba(31, 119, 180, 0.15)",
+            x=period_df["period"], y=period_df["cumulative_net"],
+            mode="lines+markers", fill="tozeroy",
+            fillcolor="rgba(31,119,180,0.15)",
             line=dict(color="#1f77b4", width=2),
         ))
         fig_net.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
         fig_net.update_layout(
-            title="Cumulative Net Cash Flow",
-            height=340,
-            margin=dict(l=0, r=0, t=40, b=0),
-            yaxis_title="S$",
-            xaxis=dict(type="category"),
-            showlegend=False,
+            title="Cumulative Net Cash Flow", height=340,
+            margin=dict(l=0, r=0, t=40, b=0), yaxis_title=default_ccy,
+            xaxis=dict(type="category"), showlegend=False,
         )
         st.plotly_chart(fig_net, use_container_width=True)
     else:
@@ -199,42 +265,104 @@ with row2_col2:
 st.divider()
 st.subheader("Transaction Detail")
 
-from models.mm_transaction import get_mm_transactions
-txns = get_mm_transactions(conn, date_from=date_from, date_to=date_to)
+detail_txns = [t for t in txns if t["type"] != "TRANSFER"]
 
-if txns:
-    rows = []
-    for t in txns:
-        if t["type"] == "TRANSFER":
-            continue
-        fx = t.get("fx_rate_to_default") or 1.0
-        amount_sgd = t["amount"] * fx if t["currency"] != "SGD" else t["amount"]
-        rows.append({
-            "Date": t["date"],
-            "Type": t["type"],
-            "Account": t["account_name"],
-            "Category": t.get("category_name") or "",
-            "Amount": f"{t['currency']} {t['amount']:,.2f}",
-            "S$": f"{amount_sgd:,.2f}",
-            "Notes": t.get("notes") or "",
-        })
-    if rows:
-        df = pd.DataFrame(rows)
+if not detail_txns:
+    st.info("No income/expense transactions in the selected period/filter.")
+    st.stop()
 
-        # Filters
-        filter_cols = st.columns(2)
-        with filter_cols[0]:
-            acc_filter = st.multiselect("Account", df["Account"].unique().tolist(), key="stat_acc_filter")
-        with filter_cols[1]:
-            cat_filter = st.multiselect("Category", df["Category"].unique().tolist(), key="stat_cat_filter")
+# Build DataFrame with both display and numeric columns
+rows = []
+for t in detail_txns:
+    amt_default = amount_in_default(
+        t["amount"], t["currency"], t.get("fx_rate_to_default"), default_ccy
+    )
+    rows.append({
+        "Date":          t["date"],
+        "Type":          t["type"],
+        "Account Group": t.get("account_group_name") or "",
+        "Account":       t.get("account_name") or "",
+        "Category":      t.get("category_name") or "",
+        "Amount":        f"{t['currency']} {t['amount']:,.2f}",
+        default_ccy:     round(amt_default, 2),
+        "Notes":         t.get("notes") or "",
+        # hidden helper columns for filtering
+        "_amount_num":   float(t["amount"]),
+        "_date":         pd.to_datetime(t["date"]),
+    })
+df = pd.DataFrame(rows)
 
-        if acc_filter:
-            df = df[df["Account"].isin(acc_filter)]
-        if cat_filter:
-            df = df[df["Category"].isin(cat_filter)]
+# ── Column Filters (inline, no dropdowns above table) ────────────────────────
+with st.expander("🔍 Filters", expanded=True):
+    # Row 1: Date range | Amount range | Notes search
+    f1 = st.columns([2.5, 2.5, 3])
+    with f1[0]:
+        min_d = df["_date"].min().date()
+        max_d = df["_date"].max().date()
+        tbl_date = st.date_input(
+            "Date range",
+            value=[min_d, max_d],
+            key="tbl_date",
+        )
+    with f1[1]:
+        amt_lo = float(df["_amount_num"].min())
+        amt_hi = float(df["_amount_num"].max())
+        tbl_amt = st.slider(
+            "Amount range",
+            min_value=amt_lo,
+            max_value=max(amt_hi, amt_lo + 0.01),
+            value=(amt_lo, amt_hi),
+            key="tbl_amt",
+        )
+    with f1[2]:
+        _all_notes = sorted(n for n in df["Notes"].unique() if n)
+        tbl_notes_sel = st.multiselect(
+            "Notes contains",
+            _all_notes,
+            key="tbl_notes_sel",
+            placeholder="Type to search notes…",
+        )
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No income/expense transactions in selected period.")
-else:
-    st.info("No transactions in selected period.")
+    # Row 2: Type | Account | Category
+    f2 = st.columns(3)
+    with f2[0]:
+        tbl_type = st.multiselect(
+            "Type",
+            sorted(df["Type"].unique().tolist()),
+            key="tbl_type",
+            placeholder="All",
+        )
+    with f2[1]:
+        tbl_accs_in_df = [a for a in all_accounts if a["name"] in df["Account"].values]
+        st.caption("Account")
+        tbl_sel_ids = _account_filter_widget("tbl_accs", all_groups, tbl_accs_in_df)
+    with f2[2]:
+        tbl_cat = st.multiselect(
+            "Category",
+            sorted(df["Category"].unique().tolist()),
+            key="tbl_cat",
+            placeholder="All",
+        )
+
+# ── Apply filters ─────────────────────────────────────────────────────────────
+fdf = df.copy()
+
+if len(tbl_date) == 2:
+    fdf = fdf[(fdf["_date"].dt.date >= tbl_date[0]) & (fdf["_date"].dt.date <= tbl_date[1])]
+fdf = fdf[(fdf["_amount_num"] >= tbl_amt[0]) & (fdf["_amount_num"] <= tbl_amt[1])]
+if tbl_type:
+    fdf = fdf[fdf["Type"].isin(tbl_type)]
+if tbl_sel_ids:
+    _tbl_acc_names = {a["name"] for a in all_accounts if a["id"] in tbl_sel_ids}
+    fdf = fdf[fdf["Account"].isin(_tbl_acc_names)]
+if tbl_cat:
+    fdf = fdf[fdf["Category"].isin(tbl_cat)]
+if tbl_notes_sel:
+    fdf = fdf[fdf["Notes"].isin(tbl_notes_sel)]
+
+st.caption(f"Showing **{len(fdf):,}** of {len(df):,} transactions")
+st.dataframe(
+    fdf.drop(columns=["_amount_num", "_date"]),
+    use_container_width=True,
+    hide_index=True,
+)

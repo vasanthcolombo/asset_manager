@@ -58,12 +58,14 @@ def get_mm_transactions(
         f"""
         SELECT
             t.*,
-            a.name  AS account_name,
-            a2.name AS to_account_name,
-            c.name  AS category_name,
-            c.type  AS category_type
+            a.name   AS account_name,
+            ag.name  AS account_group_name,
+            a2.name  AS to_account_name,
+            c.name   AS category_name,
+            c.type   AS category_type
         FROM mm_transactions t
         JOIN mm_accounts a ON a.id = t.account_id
+        JOIN mm_account_groups ag ON ag.id = a.group_id
         LEFT JOIN mm_accounts a2 ON a2.id = t.to_account_id
         LEFT JOIN mm_categories c ON c.id = t.category_id
         {clause}
