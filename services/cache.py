@@ -88,3 +88,63 @@ def invalidate_performance_cache(conn) -> None:
     """Delete all performance cache entries (call after any transaction change)."""
     conn.execute("DELETE FROM performance_cache")
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Money Manager — accounts / net-worth cache
+# ---------------------------------------------------------------------------
+
+def get_mm_fingerprint(conn) -> str:
+    """
+    Fast fingerprint covering mm_transactions + mm_accounts.
+    Changes on any insert/update/delete in either table.
+    """
+    t = conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM mm_transactions"
+    ).fetchone()
+    a = conn.execute(
+        "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM mm_accounts"
+    ).fetchone()
+    return f"{t[0]}_{t[1]}_{a[0]}_{a[1]}"
+
+
+def get_cached_accounts_data(conn, default_currency: str) -> dict:
+    """
+    Return cached net worth + all account balances in default_currency.
+    Recalculates when mm_transactions or mm_accounts change, or currency changes.
+
+    Returns:
+      {
+        "nw":       { total_assets, total_liabilities, net_worth, by_group },
+        "balances": { account_id: { "native": float, "default": float } }
+      }
+
+    Uses a single bulk transaction fetch (not one query per account).
+    """
+    fp = get_mm_fingerprint(conn)
+    if (
+        "mm_accounts_data" in st.session_state
+        and st.session_state.get("mm_accounts_fp") == fp
+        and st.session_state.get("mm_accounts_ccy") == default_currency
+    ):
+        return st.session_state["mm_accounts_data"]
+
+    from services.mm_service import get_all_account_balances_bulk, compute_net_worth_from_balances
+    from models.mm_account import get_accounts, get_account_groups
+
+    accounts = get_accounts(conn, active_only=False)
+    groups   = get_account_groups(conn)
+    balances = get_all_account_balances_bulk(conn, default_currency)
+    nw       = compute_net_worth_from_balances(accounts, balances, groups)
+
+    data = {"nw": nw, "balances": balances}
+    st.session_state["mm_accounts_data"] = data
+    st.session_state["mm_accounts_fp"]   = fp
+    st.session_state["mm_accounts_ccy"]  = default_currency
+    return data
+
+
+def invalidate_mm_accounts_cache() -> None:
+    """Clear the MM accounts/net-worth cache (call after any mm_transaction or mm_account change)."""
+    for key in ("mm_accounts_data", "mm_accounts_fp", "mm_accounts_ccy"):
+        st.session_state.pop(key, None)

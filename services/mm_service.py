@@ -183,6 +183,122 @@ def get_net_worth(conn, default_currency: str = "SGD") -> dict:
     }
 
 
+# ── Bulk balance computation (single transaction fetch for all accounts) ──────
+
+def get_all_account_balances_bulk(conn, default_currency: str) -> dict:
+    """
+    Compute native + default-currency balances for ALL accounts in ONE pass.
+    Returns {account_id: {"native": float, "default": float}}.
+
+    Replaces calling get_account_balance / get_account_balance_in per account
+    (which each fetch all transactions individually).
+    """
+    from datetime import datetime
+
+    accounts  = get_accounts(conn, active_only=False)
+    acc_by_id = {a["id"]: a for a in accounts}
+
+    # One DB query for all transactions
+    date_to  = datetime.now().strftime("%Y-%m-%d")
+    all_txns = get_mm_transactions(conn, date_to=date_to)
+
+    native_bal: dict[int, float] = {
+        a["id"]: float(a["initial_balance"]) for a in accounts
+    }
+
+    for t in all_txns:
+        ttype   = t["type"]
+        from_id = t["account_id"]
+        to_id   = t.get("to_account_id")
+        fx      = t.get("fx_rate_to_default")
+
+        if ttype in ("INCOME", "EXPENSE"):
+            if from_id in acc_by_id:
+                acc_ccy = acc_by_id[from_id]["currency"]
+                amt     = _convert(t["amount"], t["currency"], acc_ccy, fx)
+                if ttype == "INCOME":
+                    native_bal[from_id] += amt
+                else:
+                    native_bal[from_id] -= amt
+
+        elif ttype == "TRANSFER":
+            if from_id in acc_by_id:
+                acc_ccy = acc_by_id[from_id]["currency"]
+                native_bal[from_id] -= _convert(t["amount"], t["currency"], acc_ccy, fx)
+            if to_id and to_id in acc_by_id:
+                acc_ccy = acc_by_id[to_id]["currency"]
+                native_bal[to_id] += _convert(t["amount"], t["currency"], acc_ccy, fx)
+
+    target = default_currency.upper()
+
+    # Portfolio value cache (fetch once if any broker-linked accounts exist)
+    _portfolio_positions = None
+
+    result: dict[int, dict] = {}
+    for acc in accounts:
+        acc_id  = acc["id"]
+        native  = native_bal[acc_id]
+        acc_ccy = acc["currency"].upper()
+
+        if acc_ccy == target:
+            default_val = native
+        else:
+            default_val = native * get_live_fx_rate(acc_ccy, target)
+
+        # Add portfolio market value for broker-linked active accounts
+        if acc.get("broker_name") and acc["is_active"]:
+            try:
+                if _portfolio_positions is None:
+                    from services.cache import get_cached_portfolio
+                    _portfolio_positions = get_cached_portfolio(conn)
+                broker_upper = acc["broker_name"].upper()
+                port_sgd = sum(
+                    p.current_value_sgd
+                    for p in _portfolio_positions
+                    if p.broker.upper() == broker_upper and p.shares > 0
+                )
+                if target == "SGD":
+                    default_val += port_sgd
+                else:
+                    default_val += port_sgd * get_live_fx_rate("SGD", target)
+            except Exception:
+                pass
+
+        result[acc_id] = {"native": native, "default": default_val}
+
+    return result
+
+
+def compute_net_worth_from_balances(
+    accounts: list, balances: dict, groups: list
+) -> dict:
+    """Derive net worth totals from pre-computed balances dict."""
+    group_totals: dict[int, float] = {}
+    for acc in accounts:
+        if not acc["is_active"]:
+            continue
+        gid = acc["group_id"]
+        group_totals[gid] = group_totals.get(gid, 0.0) + balances.get(acc["id"], {}).get("default", 0.0)
+
+    total_assets = 0.0
+    total_liabilities = 0.0
+    by_group = []
+    for g in groups:
+        bal = group_totals.get(g["id"], 0.0)
+        by_group.append({"id": g["id"], "name": g["name"], "type": g["group_type"], "balance": bal})
+        if g["group_type"] == "ASSET":
+            total_assets += bal
+        else:
+            total_liabilities += abs(bal)
+
+    return {
+        "total_assets":      total_assets,
+        "total_liabilities": total_liabilities,
+        "net_worth":         total_assets - total_liabilities,
+        "by_group":          by_group,
+    }
+
+
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 def get_stats(conn, date_from: str, date_to: str, default_currency: str = "SGD") -> dict:

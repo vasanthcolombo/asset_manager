@@ -10,38 +10,24 @@ from models.mm_account import (
     delete_account,
     delete_account_group,
 )
-from models.mm_settings import get_mm_setting, set_mm_setting
+from models.mm_settings import get_mm_setting
 from models.transaction import get_distinct_brokers
-from services.mm_service import get_account_balance, get_account_balance_in, get_net_worth
-from services.cache import get_cached_portfolio
+from services.cache import get_cached_portfolio, get_cached_accounts_data, invalidate_mm_accounts_cache
 from services.fx_service import get_live_fx_rate
 
 st.header("Accounts")
 
 conn = st.session_state.conn
 
-# ── Default Currency Selector ─────────────────────────────────────────────────
-_COMMON_CURRENCIES = ["SGD", "USD", "EUR", "GBP", "AUD", "HKD", "JPY", "MYR", "INR", "AED"]
+# ── Default Currency (from settings) ──────────────────────────────────────────
 default_ccy = get_mm_setting(conn, "default_currency", "SGD")
 
-top_row = st.columns([6, 2])
-with top_row[1]:
-    new_ccy = st.selectbox(
-        "Default Currency",
-        _COMMON_CURRENCIES,
-        index=_COMMON_CURRENCIES.index(default_ccy) if default_ccy in _COMMON_CURRENCIES else 0,
-        key="mm_default_ccy_sel",
-        help="All balances and stats are shown in this currency.",
-    )
-    if new_ccy != default_ccy:
-        set_mm_setting(conn, "default_currency", new_ccy)
-        default_ccy = new_ccy
-        st.rerun()
+# ── Load all balances from cache (single pass, then cached) ───────────────────
+acc_cache = get_cached_accounts_data(conn, default_ccy)
+nw       = acc_cache["nw"]
+balances = acc_cache["balances"]  # {account_id: {"native": float, "default": float}}
 
 # ── Net Worth Banner ──────────────────────────────────────────────────────────
-with st.spinner("Computing net worth..."):
-    nw = get_net_worth(conn, default_ccy)
-
 nw_cols = st.columns(3)
 with nw_cols[0]:
     st.metric(
@@ -76,7 +62,7 @@ for group in groups:
     group_accs = acc_by_group.get(group["id"], [])
     active_accs = [a for a in group_accs if a["is_active"]]
     group_total = sum(
-        get_account_balance_in(conn, a["id"], default_ccy) for a in active_accs
+        balances.get(a["id"], {}).get("default", 0.0) for a in active_accs
     )
     icon = "🏦" if group["group_type"] == "ASSET" else "💳"
     label = f"{icon} {group['name']}  —  {default_ccy} {group_total:,.2f}"
@@ -86,30 +72,39 @@ for group in groups:
             st.caption("No accounts in this group yet.")
             continue
 
-        # Build compact table
-        rows = []
-        for acc in group_accs:
-            bal_native = get_account_balance(conn, acc["id"])
-            bal_default = get_account_balance_in(conn, acc["id"], default_ccy)
-            name = acc["name"]
-            if not acc["is_active"]:
-                name += " (inactive)"
-            if acc.get("broker_name"):
-                name += f"  🔗 {acc['broker_name']}"
-            rows.append({
-                "Account": name,
-                "Native Balance": f"{acc['currency']} {bal_native:,.2f}",
-                f"{default_ccy} Equivalent": (
-                    f"{default_ccy} {bal_default:,.2f}" if acc["currency"] != default_ccy else "—"
-                ),
-            })
+        # Table header
+        hdr = st.columns([4, 3, 3, 0.7])
+        hdr[0].markdown("**Account**")
+        hdr[1].markdown("**Native Balance**")
+        hdr[2].markdown(f"**{default_ccy} Equivalent**")
 
-        st.dataframe(
-            pd.DataFrame(rows),
-            use_container_width=True,
-            hide_index=True,
-            height=35 * len(rows) + 38,
-        )
+        for acc in group_accs:
+            bal_native  = balances.get(acc["id"], {}).get("native", 0.0)
+            bal_default = balances.get(acc["id"], {}).get("default", 0.0)
+            display_name = acc["name"]
+            if not acc["is_active"]:
+                display_name += " *(inactive)*"
+            if acc.get("broker_name"):
+                display_name += f"  🔗 {acc['broker_name']}"
+
+            row = st.columns([4, 3, 3, 0.7])
+            with row[0]:
+                st.markdown(display_name)
+            with row[1]:
+                st.caption(f"{acc['currency']} {bal_native:,.2f}")
+            with row[2]:
+                st.caption(
+                    f"{default_ccy} {bal_default:,.2f}"
+                    if acc["currency"] != default_ccy else "—"
+                )
+            with row[3]:
+                if st.button(
+                    "📊",
+                    key=f"acc_nav_{acc['id']}",
+                    help=f"View transactions for {acc['name']} in Stats",
+                ):
+                    st.session_state["mm_stats_prefilter_account_id"] = acc["id"]
+                    st.switch_page("pages/mm_stats.py")
 
         # Portfolio breakdown for linked Investment accounts
         for acc in group_accs:
@@ -121,12 +116,12 @@ for group in groups:
                         p.current_value_sgd for p in positions
                         if p.broker.upper() == broker_upper and p.shares > 0
                     )
-                    bal_default = get_account_balance_in(conn, acc["id"], default_ccy)
+                    acc_bal_default = balances.get(acc["id"], {}).get("default", 0.0)
                     if default_ccy == "SGD":
                         port_val = port_val_sgd
                     else:
                         port_val = port_val_sgd * get_live_fx_rate("SGD", default_ccy)
-                    cash_val = bal_default - port_val
+                    cash_val = acc_bal_default - port_val
                     st.caption(
                         f"**{acc['name']}** — Cash: {default_ccy} {cash_val:,.2f}  |  "
                         f"Portfolio: {default_ccy} {port_val:,.2f}"
@@ -168,6 +163,7 @@ with st.expander("Add New Account"):
                         initial_balance=acc_init_bal,
                         broker_name=broker_link if broker_link != "— None —" else None,
                     )
+                    invalidate_mm_accounts_cache()
                     st.success(f"Created account: {acc_name}")
                     st.rerun()
                 except Exception as e:
@@ -186,6 +182,7 @@ with st.expander("Add New Account Group"):
             if grp_name.strip():
                 try:
                     create_account_group(conn, grp_name.strip(), grp_type)
+                    invalidate_mm_accounts_cache()
                     st.success(f"Created group: {grp_name}")
                     st.rerun()
                 except Exception as e:
@@ -205,6 +202,7 @@ with st.expander("Delete Account"):
         st.caption("Warning: deleting an account also removes all its transactions.")
         if st.button("Delete Account", type="secondary", key="del_acc_btn"):
             delete_account(conn, del_acc_opts[sel_del_acc])
+            invalidate_mm_accounts_cache()
             st.success(f"Deleted '{sel_del_acc}'.")
             st.rerun()
     else:
@@ -220,6 +218,7 @@ with st.expander("Delete Account Group"):
         if st.button("Delete Group", type="secondary", key="del_grp_btn"):
             try:
                 delete_account_group(conn, del_grp_opts[sel_del_grp])
+                invalidate_mm_accounts_cache()
                 st.success(f"Deleted group '{sel_del_grp}'.")
                 st.rerun()
             except Exception as e:

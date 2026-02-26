@@ -12,6 +12,7 @@ from models.mm_account import (
 from models.mm_category import get_categories, create_category
 from models.mm_settings import get_mm_setting
 from models.mm_transaction import insert_mm_transaction, get_mm_transactions
+from services.cache import invalidate_mm_accounts_cache
 
 st.header("Import Transactions")
 
@@ -389,5 +390,6 @@ if st.button(f"Import {n_valid:,} valid records", type="primary"):
         msg += f", {n_missing:,} rows skipped (missing accounts)"
     if errors:
         msg += f", {errors:,} errors"
+    invalidate_mm_accounts_cache()
     st.success(msg)
     st.rerun()

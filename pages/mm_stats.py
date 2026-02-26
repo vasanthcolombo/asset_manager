@@ -1,6 +1,7 @@
 """Money Manager — Stats page: income/expense charts by period."""
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -76,6 +77,25 @@ st.header("Stats")
 
 conn = st.session_state.conn
 default_ccy = get_mm_setting(conn, "default_currency", "SGD")
+
+# ── Handle navigation from Accounts page ──────────────────────────────────────
+_prefilter_acc_id = st.session_state.pop("mm_stats_prefilter_account_id", None)
+if _prefilter_acc_id is not None:
+    # Resolve account name for the banner
+    _all_accs_tmp = get_accounts(conn, active_only=False)
+    _acc_name = next((a["name"] for a in _all_accs_tmp if a["id"] == _prefilter_acc_id), "Account")
+    st.session_state["mm_stats_filtered_acc_name"] = _acc_name
+    # Pre-set ONLY this account in the table filter (clear all others).
+    # Session state is read before widgets render, so no rerun needed.
+    for _a in _all_accs_tmp:
+        st.session_state[f"tbl_accs_{_a['id']}"] = (_a["id"] == _prefilter_acc_id)
+    # Signal scroll-to-transactions on this render
+    st.session_state["mm_stats_scroll_to_txns"] = True
+
+# ── Account filter banner (set when navigating from Accounts page) ────────────
+_filtered_acc_name = st.session_state.pop("mm_stats_filtered_acc_name", None)
+if _filtered_acc_name:
+    st.info(f"Filtered to account: **{_filtered_acc_name}**  —  use the Account filter below to change.")
 
 # ── Period Selector ───────────────────────────────────────────────────────────
 today = date.today()
@@ -263,7 +283,20 @@ with row2_col2:
 
 # ── Transaction Detail Table ──────────────────────────────────────────────────
 st.divider()
+st.markdown('<a name="txn-detail"></a>', unsafe_allow_html=True)
 st.subheader("Transaction Detail")
+
+# Auto-scroll here when navigating from Accounts page
+if st.session_state.pop("mm_stats_scroll_to_txns", False):
+    components.html(
+        """<script>
+        setTimeout(function() {
+            var el = window.parent.document.querySelector('a[name="txn-detail"]');
+            if (el) { el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+        }, 300);
+        </script>""",
+        height=0,
+    )
 
 detail_txns = [t for t in txns if t["type"] != "TRANSFER"]
 

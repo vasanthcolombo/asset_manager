@@ -14,6 +14,7 @@ from models.mm_transaction import (
 )
 from services.fx_service import get_live_fx_rate
 from services.mm_service import amount_in_default
+from services.cache import invalidate_mm_accounts_cache
 
 st.header("Record Transaction")
 
@@ -103,6 +104,7 @@ with st.form("mm_record_form", clear_on_submit=True):
             }
             try:
                 insert_mm_transaction(conn, txn)
+                invalidate_mm_accounts_cache()
                 default_eq = amount * fx
                 st.success(
                     f"{txn_type.title()} of {currency} {amount:,.2f}"
@@ -151,6 +153,7 @@ if recent:
         if sel_label and st.button("Delete", type="secondary"):
             txn_id = recent[labels.index(sel_label)]["id"]
             delete_mm_transaction(conn, txn_id)
+            invalidate_mm_accounts_cache()
             st.success("Deleted.")
             st.rerun()
 else:
