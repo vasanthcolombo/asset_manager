@@ -13,7 +13,7 @@ from services.fx_service import get_live_fx_rate
 from services.cache import get_cached_running_balances, invalidate_mm_accounts_cache
 from utils.mm_ui import account_filter_widget
 
-_PAGE_SIZE = 20
+_PAGE_SIZE = 50
 
 
 @st.dialog("Edit Transaction")
@@ -282,56 +282,45 @@ st.session_state.txn_page = min(st.session_state.txn_page, total_pages - 1)
 
 page_start = st.session_state.txn_page * _PAGE_SIZE
 page_end   = min(page_start + _PAGE_SIZE, total_rows)
-page_fdf   = fdf.iloc[page_start:page_end]
+page_fdf   = fdf.iloc[page_start:page_end].reset_index(drop=True)
 
-single_account = fdf["Account"].nunique() == 1
+# ── Dataframe ────────────────────────────────────────────────────────────────
+_DISPLAY_COLS = ["Date", "Type", "Account Group", "Account", "Category",
+                 "Amount", default_ccy, "Account Balance", "Notes"]
 
-# ── Column proportions ────────────────────────────────────────────────────────
-# Date | Type | Account | Category | Amount | {ccy} | Notes | ✏️ | 🗑️
-_COLS = [1.0, 1.0, 1.4, 1.4, 1.3, 0.75, 2.1, 0.32, 0.32]
+selection = st.dataframe(
+    page_fdf[_DISPLAY_COLS],
+    use_container_width=True,
+    hide_index=True,
+    on_select="rerun",
+    selection_mode="single-row",
+    key=f"txn_df_{st.session_state.txn_page}",
+)
 
-# Header
-hdr = st.columns(_COLS)
-hdr[0].markdown("**Date**")
-hdr[1].markdown("**Type**")
-hdr[2].markdown("**Account**")
-hdr[3].markdown("**Category**")
-hdr[4].markdown("**Amount**")
-hdr[5].markdown(f"**{default_ccy}**")
-hdr[6].markdown("**Notes**")
+# ── Edit / Delete for selected row ───────────────────────────────────────────
+selected_rows = selection.selection.rows
+if selected_rows:
+    sel_row  = page_fdf.iloc[selected_rows[0]]
+    txn_id   = int(sel_row["_id"])
+    txn_type = sel_row["Type"]
 
-st.divider()
-
-# ── Rows ─────────────────────────────────────────────────────────────────────
-for _, row in page_fdf.iterrows():
-    txn_id = int(row["_id"])
-    cols   = st.columns(_COLS)
-
-    cols[0].caption(row["Date"])
-    cols[1].caption(row["Type"])
-    cols[2].caption(row["Account"])
-    cols[3].caption(row["Category"])
-    cols[4].caption(row["Amount"])
-    cols[5].caption(str(row[default_ccy]))
-    cols[6].caption(row["Notes"])
-
-    with cols[7]:
-        if st.button("✏️", key=f"edit_{txn_id}", help="Edit transaction"):
+    act_cols = st.columns([1, 1, 8])
+    with act_cols[0]:
+        if st.button("✏️ Edit", key="txn_edit_btn", use_container_width=True):
             st.session_state["_edit_txn_id"] = txn_id
             _edit_dialog()
-
-    with cols[8]:
-        with st.popover("🗑️", use_container_width=True):
-            st.caption(f"Delete this {row['Type']} transaction?")
-            if st.button("Confirm delete", key=f"del_{txn_id}", type="primary",
+    with act_cols[1]:
+        with st.popover("🗑️ Delete", use_container_width=True):
+            st.caption(f"Delete this {txn_type} transaction?")
+            if st.button("Confirm delete", key="txn_del_btn", type="primary",
                          use_container_width=True):
                 delete_mm_transaction(conn, txn_id)
                 invalidate_mm_accounts_cache()
                 st.rerun()
 
 # ── Pagination controls ───────────────────────────────────────────────────────
-st.divider()
 if total_pages > 1:
+    st.divider()
     pg_cols = st.columns([1, 2, 1])
     with pg_cols[0]:
         if st.button("◀ Prev", disabled=(st.session_state.txn_page == 0),

@@ -4,8 +4,8 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 
-from models.mm_account import get_accounts, get_account_groups, create_account, create_account_group
-from models.mm_category import get_categories, create_category, delete_category
+from models.mm_account import get_accounts, get_account_groups
+from models.mm_category import get_categories
 from models.mm_settings import get_mm_setting
 from models.mm_transaction import insert_mm_transaction, get_mm_transactions
 from services.fx_service import get_live_fx_rate
@@ -65,7 +65,7 @@ if txn_type == "TRANSFER":
     with cols[2]:
         txn_date = st.date_input("Date", value=date.today(), key=f"mm_date_{v}")
     with cols[3]:
-        amount = st.number_input("Amount", min_value=0.01, step=10.0, format="%.2f",
+        amount = st.number_input("Amount", min_value=0.0, value=0.0, step=10.0, format="%.2f",
                                  key=f"mm_amt_{v}")
     with cols[4]:
         currency = (st.text_input("Currency", value=default_ccy, key=f"mm_ccy_{v}")
@@ -101,7 +101,7 @@ else:  # EXPENSE / INCOME
         else:
             st.warning("No categories found.")
     with cols[3]:
-        amount = st.number_input("Amount", min_value=0.01, step=10.0, format="%.2f",
+        amount = st.number_input("Amount", min_value=0.0, value=0.0, step=10.0, format="%.2f",
                                  key=f"mm_amt_{v}")
     with cols[4]:
         currency = (st.text_input("Currency", value=default_ccy, key=f"mm_ccy_{v}")
@@ -123,6 +123,8 @@ if st.button(btn_labels.get(txn_type, "Submit"), type="primary", use_container_w
         st.error("Please select a To Account.")
     elif txn_type == "TRANSFER" and from_acc_id == to_acc_id:
         st.error("From and To accounts must be different.")
+    elif txn_type in ("EXPENSE", "INCOME", "TRANSFER") and amount == 0:
+        st.error("Amount cannot be zero.")
     elif txn_type == "MODIFIED_BALANCE" and amount == 0:
         st.error("Delta amount cannot be zero.")
     else:
@@ -159,9 +161,14 @@ if st.button(btn_labels.get(txn_type, "Submit"), type="primary", use_container_w
 
 # ── Recent Transactions ───────────────────────────────────────────────────────
 st.divider()
-st.subheader("Recent Transactions")
+_rec_acc_id = st.session_state.get("mm_rec_from_sel")
+_rec_acc    = next((a for a in accounts if a["id"] == _rec_acc_id), None)
+if _rec_acc:
+    st.subheader(f"Recent Transactions — {_rec_acc['name']}")
+else:
+    st.subheader("Recent Transactions")
 
-recent = get_mm_transactions(conn, limit=20)
+recent = get_mm_transactions(conn, account_id=_rec_acc_id if _rec_acc else None, limit=50)
 if recent:
     rows = []
     for t in recent:
@@ -184,85 +191,3 @@ if recent:
 else:
     st.info("No transactions yet. Add one above.")
 
-# ── Management Expanders ──────────────────────────────────────────────────────
-st.divider()
-
-with st.expander("Manage Categories"):
-    st.markdown("**Add a new category**")
-    with st.form("add_category"):
-        c_cols = st.columns([2, 1, 2])
-        with c_cols[0]:
-            new_cat_name = st.text_input("Category Name")
-        with c_cols[1]:
-            new_cat_type = st.selectbox("Type", ["EXPENSE", "INCOME"])
-        with c_cols[2]:
-            parent_cats = [c for c in get_categories(conn, type_=new_cat_type) if c["parent_id"] is None]
-            parent_opts = {"— None (top-level) —": None} | {c["name"]: c["id"] for c in parent_cats}
-            sel_parent = st.selectbox("Parent Category (optional)", list(parent_opts.keys()))
-        if st.form_submit_button("Add Category"):
-            if new_cat_name.strip():
-                try:
-                    create_category(conn, new_cat_name.strip(), new_cat_type, parent_opts[sel_parent])
-                    st.success(f"Added category: {new_cat_name}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.error("Category name is required.")
-
-    st.markdown("**Remove a user-defined category**")
-    user_cats = [c for c in get_categories(conn) if not c["is_predefined"]]
-    if user_cats:
-        del_opts = {f"{c['type']} — {_cat_label(c)}": c["id"] for c in user_cats}
-        sel_del = st.selectbox("Select category to remove", list(del_opts.keys()), key="del_cat_sel")
-        if st.button("Remove Category", type="secondary"):
-            delete_category(conn, del_opts[sel_del])
-            st.success("Removed.")
-            st.rerun()
-    else:
-        st.caption("No user-defined categories to remove.")
-
-with st.expander("Manage Accounts"):
-    st.markdown("Create a new account:")
-    with st.form("mm_add_account_quick"):
-        grps     = get_account_groups(conn)
-        grp_opts = {g["name"]: g["id"] for g in grps}
-        qa_cols  = st.columns([2, 2, 1, 1])
-        with qa_cols[0]:
-            qa_name = st.text_input("Account Name", key="qa_name")
-        with qa_cols[1]:
-            qa_group = st.selectbox("Group", list(grp_opts.keys()), key="qa_group")
-        with qa_cols[2]:
-            qa_currency = st.text_input("Currency", value=default_ccy, key="qa_currency")
-        with qa_cols[3]:
-            qa_balance = st.number_input("Opening Balance", value=0.0, step=100.0, key="qa_balance")
-        if st.form_submit_button("Create Account"):
-            if qa_name.strip():
-                try:
-                    create_account(conn, grp_opts[qa_group], qa_name.strip(),
-                                   qa_currency.strip().upper() or default_ccy, qa_balance)
-                    st.success(f"Created: {qa_name}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.error("Account name is required.")
-
-with st.expander("Manage Account Groups"):
-    st.markdown("Add a custom account group:")
-    with st.form("mm_add_group_quick"):
-        ag_cols = st.columns(2)
-        with ag_cols[0]:
-            ag_name = st.text_input("Group Name", key="ag_name")
-        with ag_cols[1]:
-            ag_type = st.selectbox("Type", ["ASSET", "LIABILITY"], key="ag_type")
-        if st.form_submit_button("Create Group"):
-            if ag_name.strip():
-                try:
-                    create_account_group(conn, ag_name.strip(), ag_type)
-                    st.success(f"Created group: {ag_name}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.error("Group name is required.")

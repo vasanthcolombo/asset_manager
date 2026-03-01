@@ -3,17 +3,9 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
-from models.mm_account import (
-    get_account_groups,
-    get_accounts,
-    create_account,
-    create_account_group,
-    delete_account,
-    delete_account_group,
-)
+from models.mm_account import get_account_groups, get_accounts
 from models.mm_settings import get_mm_setting
 from models.mm_transaction import insert_mm_transaction
-from models.transaction import get_distinct_brokers
 from services.cache import get_cached_portfolio, get_cached_accounts_data, invalidate_mm_accounts_cache
 from services.fx_service import get_live_fx_rate
 
@@ -178,98 +170,4 @@ for group in groups:
                     pass
 
 st.divider()
-
-# ── Add Account / Group ───────────────────────────────────────────────────────
-with st.expander("Add New Account"):
-    with st.form("add_account"):
-        f_cols = st.columns([2, 2, 1, 1])
-        with f_cols[0]:
-            acc_name = st.text_input("Account Name", placeholder="e.g. DBS Savings")
-        with f_cols[1]:
-            group_opts = {g["name"]: g["id"] for g in groups}
-            sel_group_name = st.selectbox("Account Group", list(group_opts.keys()))
-        with f_cols[2]:
-            acc_currency = st.text_input("Currency", value=default_ccy)
-        with f_cols[3]:
-            acc_init_bal = st.number_input("Opening Balance", value=0.0, step=100.0, format="%.2f")
-
-        all_brokers = get_distinct_brokers(conn)
-        broker_link = st.selectbox(
-            "Link to Portfolio Broker (optional)",
-            ["— None —"] + all_brokers,
-            help="Investment accounts only: balance includes portfolio market value for this broker.",
-        )
-
-        if st.form_submit_button("Create Account", use_container_width=True):
-            if acc_name.strip():
-                try:
-                    create_account(
-                        conn,
-                        group_id=group_opts[sel_group_name],
-                        name=acc_name.strip(),
-                        currency=acc_currency.strip().upper() or default_ccy,
-                        initial_balance=acc_init_bal,
-                        broker_name=broker_link if broker_link != "— None —" else None,
-                    )
-                    invalidate_mm_accounts_cache()
-                    st.success(f"Created account: {acc_name}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.error("Account name is required.")
-
-with st.expander("Add New Account Group"):
-    with st.form("add_group"):
-        g_cols = st.columns(2)
-        with g_cols[0]:
-            grp_name = st.text_input("Group Name", placeholder="e.g. Crypto")
-        with g_cols[1]:
-            grp_type = st.selectbox("Type", ["ASSET", "LIABILITY"])
-        if st.form_submit_button("Create Group", use_container_width=True):
-            if grp_name.strip():
-                try:
-                    create_account_group(conn, grp_name.strip(), grp_type)
-                    invalidate_mm_accounts_cache()
-                    st.success(f"Created group: {grp_name}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-            else:
-                st.error("Group name is required.")
-
-# ── Delete Account ─────────────────────────────────────────────────────────────
-with st.expander("Delete Account"):
-    all_accs_for_del = get_accounts(conn, active_only=False)
-    if all_accs_for_del:
-        del_acc_opts = {
-            f"{a['group_name']} / {a['name']}": a["id"]
-            for a in sorted(all_accs_for_del, key=lambda x: (x["group_name"], x["name"]))
-        }
-        sel_del_acc = st.selectbox("Select account", list(del_acc_opts.keys()), key="del_acc_sel")
-        st.caption("Warning: deleting an account also removes all its transactions.")
-        if st.button("Delete Account", type="secondary", key="del_acc_btn"):
-            delete_account(conn, del_acc_opts[sel_del_acc])
-            invalidate_mm_accounts_cache()
-            st.success(f"Deleted '{sel_del_acc}'.")
-            st.rerun()
-    else:
-        st.caption("No accounts to delete.")
-
-# ── Delete Account Group ───────────────────────────────────────────────────────
-with st.expander("Delete Account Group"):
-    user_groups = [g for g in groups if not g["is_predefined"]]
-    if user_groups:
-        del_grp_opts = {g["name"]: g["id"] for g in user_groups}
-        sel_del_grp = st.selectbox("Select group", list(del_grp_opts.keys()), key="del_grp_sel")
-        st.caption("Note: the group must have no accounts before it can be deleted.")
-        if st.button("Delete Group", type="secondary", key="del_grp_btn"):
-            try:
-                delete_account_group(conn, del_grp_opts[sel_del_grp])
-                invalidate_mm_accounts_cache()
-                st.success(f"Deleted group '{sel_del_grp}'.")
-                st.rerun()
-            except Exception as e:
-                st.error(str(e))
-    else:
-        st.caption("No user-defined groups to delete (built-in groups cannot be deleted).")
+st.caption("To add or delete accounts and account groups, go to **Settings**.")
