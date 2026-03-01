@@ -65,7 +65,7 @@ if txn_type == "TRANSFER":
     with cols[2]:
         txn_date = st.date_input("Date", value=date.today(), key=f"mm_date_{v}")
     with cols[3]:
-        amount = st.number_input("Amount", min_value=0.0, value=0.0, step=10.0, format="%.2f",
+        amount = st.number_input("Amount", value=0.0, step=10.0, format="%.2f",
                                  key=f"mm_amt_{v}")
     with cols[4]:
         currency = (st.text_input("Currency", value=default_ccy, key=f"mm_ccy_{v}")
@@ -97,17 +97,73 @@ else:  # EXPENSE / INCOME
         txn_date = st.date_input("Date", value=date.today(), key=f"mm_date_{v}")
     with cols[2]:
         if cat_options:
-            sel_cat_label = st.selectbox("Category", list(cat_options.keys()), key=f"mm_cat_{v}")
+            sel_cat_label = st.selectbox(
+                "Category", list(cat_options.keys()),
+                index=None, placeholder="Select category…",
+                key=f"mm_cat_{v}",
+            )
         else:
             st.warning("No categories found.")
     with cols[3]:
-        amount = st.number_input("Amount", min_value=0.0, value=0.0, step=10.0, format="%.2f",
+        amount = st.number_input("Amount", value=0.0, step=10.0, format="%.2f",
                                  key=f"mm_amt_{v}")
     with cols[4]:
         currency = (st.text_input("Currency", value=default_ccy, key=f"mm_ccy_{v}")
                     .strip().upper() or default_ccy)
 
-notes = st.text_input("Notes (optional)", key=f"mm_notes_{v}")
+# Transfer any pending suggestion into the widget key BEFORE the widget renders.
+# (Streamlit forbids writing to a widget's session-state key after it is instantiated.)
+_notes_key = f"mm_notes_{v}"
+_notes_pending_key = f"mm_notes_pending_{v}"
+if _notes_pending_key in st.session_state:
+    st.session_state[_notes_key] = st.session_state.pop(_notes_pending_key)
+
+notes = st.text_input("Notes (optional)", key=_notes_key)
+
+# ── Note suggestions ──────────────────────────────────────────────────────────
+# Streamlit text_input only reruns on Enter/blur, not on each keystroke.
+# Strategy: show recent notes for the account always; narrow them when text is typed.
+_typed             = notes.strip()
+_acc_id_for_notes  = st.session_state.get("mm_rec_from_sel")
+
+if _typed:
+    # Filter by what was typed (updates on Enter / focus-loss)
+    if _acc_id_for_notes:
+        _sug_rows = conn.execute(
+            "SELECT DISTINCT notes FROM mm_transactions "
+            "WHERE notes IS NOT NULL AND notes != '' AND account_id = ? "
+            "AND LOWER(notes) LIKE ? ORDER BY notes LIMIT 8",
+            (_acc_id_for_notes, f"%{_typed.lower()}%"),
+        ).fetchall()
+    else:
+        _sug_rows = conn.execute(
+            "SELECT DISTINCT notes FROM mm_transactions "
+            "WHERE notes IS NOT NULL AND notes != '' "
+            "AND LOWER(notes) LIKE ? ORDER BY notes LIMIT 8",
+            (f"%{_typed.lower()}%",),
+        ).fetchall()
+    _suggestions = [r[0] for r in _sug_rows if r[0] != _typed]
+elif _acc_id_for_notes:
+    # Nothing typed yet — show 8 most-recently-used notes for this account
+    _sug_rows = conn.execute(
+        "SELECT notes FROM mm_transactions "
+        "WHERE notes IS NOT NULL AND notes != '' AND account_id = ? "
+        "GROUP BY notes ORDER BY MAX(id) DESC LIMIT 8",
+        (_acc_id_for_notes,),
+    ).fetchall()
+    _suggestions = [r[0] for r in _sug_rows]
+else:
+    _suggestions = []
+
+if _suggestions:
+    _ncols = min(len(_suggestions), 4)
+    sug_cols = st.columns(_ncols)
+    for i, sug in enumerate(_suggestions):
+        label = sug[:40] + ("…" if len(sug) > 40 else "")
+        with sug_cols[i % _ncols]:
+            if st.button(label, key=f"mm_note_sug_{v}_{i}", use_container_width=True):
+                st.session_state[_notes_pending_key] = sug
+                st.rerun()
 
 # ── Submit ────────────────────────────────────────────────────────────────────
 btn_labels = {
@@ -123,6 +179,8 @@ if st.button(btn_labels.get(txn_type, "Submit"), type="primary", use_container_w
         st.error("Please select a To Account.")
     elif txn_type == "TRANSFER" and from_acc_id == to_acc_id:
         st.error("From and To accounts must be different.")
+    elif txn_type in ("EXPENSE", "INCOME") and sel_cat_label is None:
+        st.error("Please select a category.")
     elif txn_type in ("EXPENSE", "INCOME", "TRANSFER") and amount == 0:
         st.error("Amount cannot be zero.")
     elif txn_type == "MODIFIED_BALANCE" and amount == 0:
