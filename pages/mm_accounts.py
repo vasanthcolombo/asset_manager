@@ -32,16 +32,19 @@ def _adjust_balance_dialog():
         if delta == 0:
             st.warning("No change — new balance equals current balance.")
         else:
-            insert_mm_transaction(conn, {
-                "date":     date.today().strftime("%Y-%m-%d"),
-                "type":     "MODIFIED_BALANCE",
-                "account_id": acc_id,
-                "amount":   delta,
-                "currency": acc_ccy,
-                "notes":    notes or f"Balance adjusted to {acc_ccy} {new_bal:,.2f}",
-            })
-            invalidate_mm_accounts_cache()
-            st.rerun()
+            try:
+                insert_mm_transaction(conn, {
+                    "date":     date.today().strftime("%Y-%m-%d"),
+                    "type":     "MODIFIED_BALANCE",
+                    "account_id": acc_id,
+                    "amount":   delta,
+                    "currency": acc_ccy,
+                    "notes":    notes or f"Balance adjusted to {acc_ccy} {new_bal:,.2f}",
+                })
+                invalidate_mm_accounts_cache()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not adjust balance: {e}")
 
 
 st.header("Accounts")

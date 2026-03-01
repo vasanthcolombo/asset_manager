@@ -157,7 +157,7 @@ if st.button(btn_labels.get(txn_type, "Submit"), type="primary", use_container_w
             st.session_state.mm_rec_v += 1  # resets date/category/amount/currency/notes
             st.rerun()
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Could not save transaction: {e}")
 
 # ── Recent Transactions ───────────────────────────────────────────────────────
 st.divider()

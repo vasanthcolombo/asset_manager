@@ -71,20 +71,23 @@ def _edit_dialog():
     e_notes = st.text_input("Notes", value=txn.get("notes") or "")
 
     if st.button("Save Changes", type="primary", use_container_width=True):
-        fx = 1.0 if e_currency == default_ccy else get_live_fx_rate(e_currency, default_ccy)
-        update_mm_transaction(conn, txn_id, {
-            "date":               e_date.strftime("%Y-%m-%d"),
-            "type":               e_type,
-            "account_id":         acc_labels[e_acc],
-            "to_account_id":      acc_labels.get(e_to_acc) if e_to_acc else None,
-            "category_id":        e_cat_id,
-            "amount":             e_amount,
-            "currency":           e_currency,
-            "fx_rate_to_default": fx,
-            "notes":              e_notes or None,
-        })
-        invalidate_mm_accounts_cache()
-        st.rerun()
+        try:
+            fx = 1.0 if e_currency == default_ccy else get_live_fx_rate(e_currency, default_ccy)
+            update_mm_transaction(conn, txn_id, {
+                "date":               e_date.strftime("%Y-%m-%d"),
+                "type":               e_type,
+                "account_id":         acc_labels[e_acc],
+                "to_account_id":      acc_labels.get(e_to_acc) if e_to_acc else None,
+                "category_id":        e_cat_id,
+                "amount":             e_amount,
+                "currency":           e_currency,
+                "fx_rate_to_default": fx,
+                "notes":              e_notes or None,
+            })
+            invalidate_mm_accounts_cache()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not save changes: {e}")
 
 
 st.header("Transactions")

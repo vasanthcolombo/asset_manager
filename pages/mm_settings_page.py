@@ -14,6 +14,30 @@ from models.mm_settings import get_mm_setting, set_mm_setting
 from models.transaction import get_distinct_brokers
 from services.cache import invalidate_mm_accounts_cache
 
+def _friendly_error(e: Exception, op: str = "", name: str = "", extra: str = "") -> str:
+    """Translate raw SQLite constraint errors into plain-language messages."""
+    msg = str(e)
+    if "UNIQUE" in msg:
+        if "idx_mm_cat_unique" in msg or "mm_categories" in msg:
+            return f'A category named "{name}" already exists for this type.'
+        if "mm_accounts.name" in msg or ("mm_accounts" in msg and "name" in msg):
+            return f'An account named "{name}" already exists in the selected group.'
+        if "mm_account_groups" in msg:
+            return f'An account group named "{name}" already exists.'
+        return f'"{name}" already exists.'
+    if "FOREIGN KEY" in msg:
+        if op == "delete_account":
+            return (f'Cannot delete "{name}" — it still has transactions. '
+                    "Delete all its transactions first.")
+        if op == "delete_group":
+            return (f'Cannot delete group "{name}" — it still has accounts. '
+                    "Remove or reassign all accounts in this group first.")
+        return f'Cannot delete "{name}" — it is referenced by other records.'
+    if extra:
+        return extra
+    return msg
+
+
 st.header("Settings")
 
 conn = st.session_state.conn
@@ -65,7 +89,7 @@ with st.expander("Add Category"):
                     st.success(f"Added category: {new_cat_name}")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(_friendly_error(e, name=new_cat_name.strip()))
             else:
                 st.error("Category name is required.")
 
@@ -125,7 +149,7 @@ with st.expander("Add Account"):
                     st.success(f"Created account: {acc_name}")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(_friendly_error(e, name=acc_name.strip()))
             else:
                 st.error("Account name is required.")
 
@@ -139,10 +163,13 @@ with st.expander("Delete Account"):
         sel_del_acc = st.selectbox("Select account", list(del_acc_opts.keys()), key="settings_del_acc_sel")
         st.caption("Warning: deleting an account also removes all its transactions.")
         if st.button("Delete Account", type="secondary", key="settings_del_acc_btn"):
-            delete_account(conn, del_acc_opts[sel_del_acc])
-            invalidate_mm_accounts_cache()
-            st.success(f"Deleted '{sel_del_acc}'.")
-            st.rerun()
+            try:
+                delete_account(conn, del_acc_opts[sel_del_acc])
+                invalidate_mm_accounts_cache()
+                st.success(f"Deleted '{sel_del_acc}'.")
+                st.rerun()
+            except Exception as e:
+                st.error(_friendly_error(e, op="delete_account", name=sel_del_acc))
     else:
         st.caption("No accounts to delete.")
 
@@ -166,7 +193,7 @@ with st.expander("Add Account Group"):
                     st.success(f"Created group: {grp_name}")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(_friendly_error(e, name=grp_name.strip()))
             else:
                 st.error("Group name is required.")
 
@@ -183,6 +210,6 @@ with st.expander("Delete Account Group"):
                 st.success(f"Deleted group '{sel_del_grp}'.")
                 st.rerun()
             except Exception as e:
-                st.error(str(e))
+                st.error(_friendly_error(e, op="delete_group", name=sel_del_grp))
     else:
         st.caption("No user-defined groups to delete (built-in groups cannot be deleted).")
