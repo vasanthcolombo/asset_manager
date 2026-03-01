@@ -34,11 +34,12 @@ pages = {
         st.Page("pages/stocks.py",       title="Watchlist",    icon="⭐"),
     ],
     "Money Manager": [
-        st.Page("pages/mm_record.py",        title="Record",   icon="✏️"),
-        st.Page("pages/mm_stats.py",         title="Stats",    icon="📊"),
-        st.Page("pages/mm_accounts.py",      title="Accounts", icon="🏦"),
-        st.Page("pages/mm_import.py",        title="Import",   icon="📥"),
-        st.Page("pages/mm_settings_page.py", title="Settings", icon="⚙️"),
+        st.Page("pages/mm_record.py",        title="Record",       icon="✏️"),
+        st.Page("pages/mm_stats.py",         title="Stats",        icon="📊"),
+        st.Page("pages/mm_transactions.py",  title="Transactions", icon="📋"),
+        st.Page("pages/mm_accounts.py",      title="Accounts",     icon="🏦"),
+        st.Page("pages/mm_import.py",        title="Import",       icon="📥"),
+        st.Page("pages/mm_settings_page.py", title="Settings",     icon="⚙️"),
     ],
 }
 

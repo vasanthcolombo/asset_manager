@@ -104,7 +104,7 @@ for group in groups:
                     help=f"View transactions for {acc['name']} in Stats",
                 ):
                     st.session_state["mm_stats_prefilter_account_id"] = acc["id"]
-                    st.switch_page("pages/mm_stats.py")
+                    st.switch_page("pages/mm_transactions.py")
 
         # Portfolio breakdown for linked Investment accounts
         for acc in group_accs:
