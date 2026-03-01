@@ -2,6 +2,7 @@
 
 import streamlit as st
 import pandas as pd
+from datetime import date
 from models.mm_account import (
     get_account_groups,
     get_accounts,
@@ -11,9 +12,45 @@ from models.mm_account import (
     delete_account_group,
 )
 from models.mm_settings import get_mm_setting
+from models.mm_transaction import insert_mm_transaction
 from models.transaction import get_distinct_brokers
 from services.cache import get_cached_portfolio, get_cached_accounts_data, invalidate_mm_accounts_cache
 from services.fx_service import get_live_fx_rate
+
+
+@st.dialog("Adjust Account Balance")
+def _adjust_balance_dialog():
+    conn     = st.session_state.conn
+    acc_id   = st.session_state["_adj_acc_id"]
+    acc_name = st.session_state["_adj_acc_name"]
+    acc_ccy  = st.session_state["_adj_acc_ccy"]
+    cur_bal  = st.session_state["_adj_cur_bal"]
+
+    st.write(f"**{acc_name}** — current balance: **{acc_ccy} {cur_bal:,.2f}**")
+    new_bal = st.number_input(
+        f"New balance ({acc_ccy})",
+        value=float(cur_bal),
+        format="%.2f",
+        step=100.0,
+    )
+    notes = st.text_input("Notes (optional)", placeholder="e.g. Monthly reconciliation")
+
+    if st.button("Apply Adjustment", type="primary", use_container_width=True):
+        delta = new_bal - cur_bal
+        if delta == 0:
+            st.warning("No change — new balance equals current balance.")
+        else:
+            insert_mm_transaction(conn, {
+                "date":     date.today().strftime("%Y-%m-%d"),
+                "type":     "MODIFIED_BALANCE",
+                "account_id": acc_id,
+                "amount":   delta,
+                "currency": acc_ccy,
+                "notes":    notes or f"Balance adjusted to {acc_ccy} {new_bal:,.2f}",
+            })
+            invalidate_mm_accounts_cache()
+            st.rerun()
+
 
 st.header("Accounts")
 
@@ -73,7 +110,7 @@ for group in groups:
             continue
 
         # Table header
-        hdr = st.columns([4, 3, 3, 0.7])
+        hdr = st.columns([4, 3, 3, 0.7, 0.7])
         hdr[0].markdown("**Account**")
         hdr[1].markdown("**Native Balance**")
         hdr[2].markdown(f"**{default_ccy} Equivalent**")
@@ -87,7 +124,7 @@ for group in groups:
             if acc.get("broker_name"):
                 display_name += f"  🔗 {acc['broker_name']}"
 
-            row = st.columns([4, 3, 3, 0.7])
+            row = st.columns([4, 3, 3, 0.7, 0.7])
             with row[0]:
                 st.markdown(display_name)
             with row[1]:
@@ -101,10 +138,21 @@ for group in groups:
                 if st.button(
                     "📊",
                     key=f"acc_nav_{acc['id']}",
-                    help=f"View transactions for {acc['name']} in Stats",
+                    help=f"View transactions for {acc['name']}",
                 ):
                     st.session_state["mm_stats_prefilter_account_id"] = acc["id"]
                     st.switch_page("pages/mm_transactions.py")
+            with row[4]:
+                if st.button(
+                    "⚖️",
+                    key=f"acc_adj_{acc['id']}",
+                    help=f"Adjust balance for {acc['name']}",
+                ):
+                    st.session_state["_adj_acc_id"]   = acc["id"]
+                    st.session_state["_adj_acc_name"] = acc["name"]
+                    st.session_state["_adj_acc_ccy"]  = acc["currency"]
+                    st.session_state["_adj_cur_bal"]  = bal_native
+                    _adjust_balance_dialog()
 
         # Portfolio breakdown for linked Investment accounts
         for acc in group_accs:

@@ -70,7 +70,7 @@ expense_cat: dict[str, float] = {}
 period_rows: dict[str, dict]  = {}
 
 for t in txns:
-    if t["type"] == "TRANSFER":
+    if t["type"] in ("TRANSFER", "MODIFIED_BALANCE"):
         continue
     amt    = amount_in_default(t["amount"], t["currency"], t.get("fx_rate_to_default"), default_ccy)
     cat    = t.get("category_name") or "Uncategorized"

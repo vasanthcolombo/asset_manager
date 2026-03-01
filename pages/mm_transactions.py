@@ -5,11 +5,87 @@ import pandas as pd
 from datetime import date, timedelta
 
 from models.mm_account import get_account_groups, get_accounts
+from models.mm_category import get_categories
 from models.mm_settings import get_mm_setting
-from models.mm_transaction import get_mm_transactions
+from models.mm_transaction import get_mm_transactions, update_mm_transaction, delete_mm_transaction
 from services.mm_service import amount_in_default
-from services.cache import get_cached_running_balances
+from services.fx_service import get_live_fx_rate
+from services.cache import get_cached_running_balances, invalidate_mm_accounts_cache
 from utils.mm_ui import account_filter_widget
+
+_PAGE_SIZE = 20
+
+
+@st.dialog("Edit Transaction")
+def _edit_dialog():
+    conn    = st.session_state.conn
+    txn_id  = st.session_state.get("_edit_txn_id")
+    default_ccy = get_mm_setting(conn, "default_currency", "SGD")
+
+    row = conn.execute("SELECT * FROM mm_transactions WHERE id = ?", (txn_id,)).fetchone()
+    if not row:
+        st.error("Transaction not found.")
+        return
+    txn = dict(row)
+
+    all_accounts = get_accounts(conn, active_only=False)
+    acc_labels   = {f"{a['name']} ({a['group_name']})": a["id"] for a in all_accounts}
+    acc_ids      = list(acc_labels.values())
+
+    e_date = st.date_input("Date", value=pd.to_datetime(txn["date"]).date())
+    e_type = st.selectbox(
+        "Type",
+        ["EXPENSE", "INCOME", "TRANSFER", "MODIFIED_BALANCE"],
+        index=["EXPENSE", "INCOME", "TRANSFER", "MODIFIED_BALANCE"].index(txn["type"])
+        if txn["type"] in ["EXPENSE", "INCOME", "TRANSFER", "MODIFIED_BALANCE"] else 0,
+    )
+
+    acc_default = acc_ids.index(txn["account_id"]) if txn["account_id"] in acc_ids else 0
+    e_acc = st.selectbox("Account", list(acc_labels.keys()), index=acc_default)
+
+    e_to_acc = None
+    e_cat_id = None
+    if e_type == "TRANSFER":
+        to_default = acc_ids.index(txn["to_account_id"]) if txn.get("to_account_id") in acc_ids else 0
+        e_to_acc = st.selectbox("To Account", list(acc_labels.keys()), index=to_default)
+    elif e_type in ("INCOME", "EXPENSE"):
+        cats     = get_categories(conn, type_=e_type)
+        cat_opts = {c["name"]: c["id"] for c in cats}
+        cat_ids  = list(cat_opts.values())
+        cat_default = cat_ids.index(txn["category_id"]) if txn.get("category_id") in cat_ids else 0
+        e_cat_name = st.selectbox("Category", list(cat_opts.keys()), index=cat_default)
+        e_cat_id   = cat_opts.get(e_cat_name)
+    elif e_type == "MODIFIED_BALANCE":
+        st.caption("Delta amount: positive to increase balance, negative to decrease.")
+
+    col_amt, col_ccy = st.columns(2)
+    with col_amt:
+        if e_type == "MODIFIED_BALANCE":
+            e_amount = st.number_input("Delta Amount", value=float(txn["amount"]), format="%.2f", step=10.0)
+        else:
+            e_amount = st.number_input("Amount", min_value=0.01, value=abs(float(txn["amount"])),
+                                       format="%.2f", step=10.0)
+    with col_ccy:
+        e_currency = st.text_input("Currency", value=txn["currency"]).strip().upper()
+
+    e_notes = st.text_input("Notes", value=txn.get("notes") or "")
+
+    if st.button("Save Changes", type="primary", use_container_width=True):
+        fx = 1.0 if e_currency == default_ccy else get_live_fx_rate(e_currency, default_ccy)
+        update_mm_transaction(conn, txn_id, {
+            "date":               e_date.strftime("%Y-%m-%d"),
+            "type":               e_type,
+            "account_id":         acc_labels[e_acc],
+            "to_account_id":      acc_labels.get(e_to_acc) if e_to_acc else None,
+            "category_id":        e_cat_id,
+            "amount":             e_amount,
+            "currency":           e_currency,
+            "fx_rate_to_default": fx,
+            "notes":              e_notes or None,
+        })
+        invalidate_mm_accounts_cache()
+        st.rerun()
+
 
 st.header("Transactions")
 
@@ -107,6 +183,11 @@ for t in txns:
             to_acc      = _acc_map.get(t.get("to_account_id"))
             acc_group   = to_acc["group_name"] if to_acc else ""
             acc_name    = t.get("to_account_name") or ""
+    elif t["type"] == "MODIFIED_BALANCE":
+        rb          = running_bals.get(t["id"], {})
+        cat_display = "Balance Adjustment"
+        acc_group   = t.get("account_group_name") or ""
+        acc_name    = t.get("account_name") or ""
     else:
         rb          = running_bals.get(t["id"], {})
         cat_display = t.get("category_name") or ""
@@ -126,6 +207,7 @@ for t in txns:
         "Notes":           t.get("notes") or "",
         "_amount_num":     float(t["amount"]),
         "_date":           pd.to_datetime(t["date"]),
+        "_id":             t["id"],
     })
 
 df = pd.DataFrame(rows)
@@ -185,11 +267,84 @@ if tbl_cat:
 if tbl_notes_sel:
     fdf = fdf[fdf["Notes"].isin(tbl_notes_sel)]
 
-st.caption(f"Showing **{len(fdf):,}** of {len(df):,} transactions")
+total_rows = len(fdf)
+st.caption(f"Showing **{total_rows:,}** of {len(df):,} transactions")
 
-# Hide Account Balance when multiple accounts are mixed (balances are independent)
-_drop = ["_amount_num", "_date"]
-if fdf["Account"].nunique() != 1:
-    _drop.append("Account Balance")
+if total_rows == 0:
+    st.info("No transactions match the current filters.")
+    st.stop()
 
-st.dataframe(fdf.drop(columns=_drop), use_container_width=True, hide_index=True)
+# ── Pagination ────────────────────────────────────────────────────────────────
+total_pages = max(1, (total_rows + _PAGE_SIZE - 1) // _PAGE_SIZE)
+if "txn_page" not in st.session_state:
+    st.session_state.txn_page = 0
+st.session_state.txn_page = min(st.session_state.txn_page, total_pages - 1)
+
+page_start = st.session_state.txn_page * _PAGE_SIZE
+page_end   = min(page_start + _PAGE_SIZE, total_rows)
+page_fdf   = fdf.iloc[page_start:page_end]
+
+single_account = fdf["Account"].nunique() == 1
+
+# ── Column proportions ────────────────────────────────────────────────────────
+# Date | Type | Account | Category | Amount | {ccy} | Notes | ✏️ | 🗑️
+_COLS = [1.0, 1.0, 1.4, 1.4, 1.3, 0.75, 2.1, 0.32, 0.32]
+
+# Header
+hdr = st.columns(_COLS)
+hdr[0].markdown("**Date**")
+hdr[1].markdown("**Type**")
+hdr[2].markdown("**Account**")
+hdr[3].markdown("**Category**")
+hdr[4].markdown("**Amount**")
+hdr[5].markdown(f"**{default_ccy}**")
+hdr[6].markdown("**Notes**")
+
+st.divider()
+
+# ── Rows ─────────────────────────────────────────────────────────────────────
+for _, row in page_fdf.iterrows():
+    txn_id = int(row["_id"])
+    cols   = st.columns(_COLS)
+
+    cols[0].caption(row["Date"])
+    cols[1].caption(row["Type"])
+    cols[2].caption(row["Account"])
+    cols[3].caption(row["Category"])
+    cols[4].caption(row["Amount"])
+    cols[5].caption(str(row[default_ccy]))
+    cols[6].caption(row["Notes"])
+
+    with cols[7]:
+        if st.button("✏️", key=f"edit_{txn_id}", help="Edit transaction"):
+            st.session_state["_edit_txn_id"] = txn_id
+            _edit_dialog()
+
+    with cols[8]:
+        with st.popover("🗑️", use_container_width=True):
+            st.caption(f"Delete this {row['Type']} transaction?")
+            if st.button("Confirm delete", key=f"del_{txn_id}", type="primary",
+                         use_container_width=True):
+                delete_mm_transaction(conn, txn_id)
+                invalidate_mm_accounts_cache()
+                st.rerun()
+
+# ── Pagination controls ───────────────────────────────────────────────────────
+st.divider()
+if total_pages > 1:
+    pg_cols = st.columns([1, 2, 1])
+    with pg_cols[0]:
+        if st.button("◀ Prev", disabled=(st.session_state.txn_page == 0),
+                     use_container_width=True):
+            st.session_state.txn_page -= 1
+            st.rerun()
+    with pg_cols[1]:
+        st.caption(
+            f"Page {st.session_state.txn_page + 1} of {total_pages}  "
+            f"(rows {page_start + 1}–{page_end} of {total_rows})"
+        )
+    with pg_cols[2]:
+        if st.button("Next ▶", disabled=(st.session_state.txn_page >= total_pages - 1),
+                     use_container_width=True):
+            st.session_state.txn_page += 1
+            st.rerun()

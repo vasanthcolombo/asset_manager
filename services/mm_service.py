@@ -47,6 +47,8 @@ def get_account_balance(
             balance += amount_native
         elif t["type"] == "EXPENSE" and t["account_id"] == account_id:
             balance -= amount_native
+        elif t["type"] == "MODIFIED_BALANCE" and t["account_id"] == account_id:
+            balance += amount_native  # amount is a signed delta
         elif t["type"] == "TRANSFER":
             if t["account_id"] == account_id:
                 balance -= amount_native
@@ -221,6 +223,11 @@ def get_all_account_balances_bulk(conn, default_currency: str) -> dict:
                 else:
                     native_bal[from_id] -= amt
 
+        elif ttype == "MODIFIED_BALANCE":
+            if from_id in acc_by_id:
+                acc_ccy = acc_by_id[from_id]["currency"]
+                native_bal[from_id] += _convert(t["amount"], t["currency"], acc_ccy, fx)
+
         elif ttype == "TRANSFER":
             if from_id in acc_by_id:
                 acc_ccy = acc_by_id[from_id]["currency"]
@@ -311,6 +318,10 @@ def compute_all_running_balances(conn) -> dict:
             acc_ccy = acc_by_id[from_id]["currency"]
             running[from_id] -= _convert(r["amount"], r["currency"], acc_ccy, fx)
 
+        elif ttype == "MODIFIED_BALANCE" and from_id in acc_by_id:
+            acc_ccy = acc_by_id[from_id]["currency"]
+            running[from_id] += _convert(r["amount"], r["currency"], acc_ccy, fx)
+
         elif ttype == "TRANSFER":
             if from_id in acc_by_id:
                 acc_ccy = acc_by_id[from_id]["currency"]
@@ -319,8 +330,8 @@ def compute_all_running_balances(conn) -> dict:
                 acc_ccy = acc_by_id[to_id]["currency"]
                 running[to_id] += _convert(r["amount"], r["currency"], acc_ccy, fx)
 
-        # Store balance snapshot for INCOME/EXPENSE (int key) and TRANSFER (tuple key)
-        if ttype in ("INCOME", "EXPENSE") and from_id in acc_by_id:
+        # Store balance snapshot for INCOME/EXPENSE/MODIFIED_BALANCE (int key) and TRANSFER (tuple key)
+        if ttype in ("INCOME", "EXPENSE", "MODIFIED_BALANCE") and from_id in acc_by_id:
             result[r["id"]] = {
                 "balance":  running[from_id],
                 "currency": acc_by_id[from_id]["currency"],
@@ -390,7 +401,7 @@ def get_stats(conn, date_from: str, date_to: str, default_currency: str = "SGD")
     period_rows: dict[str, dict] = {}
 
     for t in txns:
-        if t["type"] == "TRANSFER":
+        if t["type"] in ("TRANSFER", "MODIFIED_BALANCE"):
             continue
 
         amt = amount_in_default(

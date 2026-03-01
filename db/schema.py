@@ -146,7 +146,7 @@ TABLES = [
     CREATE TABLE IF NOT EXISTS mm_transactions (
         id                 INTEGER PRIMARY KEY AUTOINCREMENT,
         date               TEXT NOT NULL,
-        type               TEXT NOT NULL CHECK(type IN ('INCOME','EXPENSE','TRANSFER')),
+        type               TEXT NOT NULL CHECK(type IN ('INCOME','EXPENSE','TRANSFER','MODIFIED_BALANCE')),
         account_id         INTEGER NOT NULL REFERENCES mm_accounts(id),
         to_account_id      INTEGER REFERENCES mm_accounts(id),
         category_id        INTEGER REFERENCES mm_categories(id),
@@ -210,10 +210,46 @@ def _seed_mm_defaults(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_add_modified_balance(conn: sqlite3.Connection) -> None:
+    """Extend mm_transactions.type CHECK to include MODIFIED_BALANCE for existing DBs."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='mm_transactions'"
+    ).fetchone()
+    if not row or "MODIFIED_BALANCE" in (row["sql"] or ""):
+        return  # New DB or already migrated
+    # Use individual execute() calls — more reliable than executescript() in WAL mode
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("""
+        CREATE TABLE mm_transactions_new (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            date               TEXT NOT NULL,
+            type               TEXT NOT NULL CHECK(type IN ('INCOME','EXPENSE','TRANSFER','MODIFIED_BALANCE')),
+            account_id         INTEGER NOT NULL REFERENCES mm_accounts(id),
+            to_account_id      INTEGER REFERENCES mm_accounts(id),
+            category_id        INTEGER REFERENCES mm_categories(id),
+            amount             REAL NOT NULL,
+            currency           TEXT NOT NULL DEFAULT 'SGD',
+            fx_rate_to_default REAL,
+            notes              TEXT,
+            created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("INSERT INTO mm_transactions_new SELECT * FROM mm_transactions")
+    conn.execute("DROP TABLE mm_transactions")
+    conn.execute("ALTER TABLE mm_transactions_new RENAME TO mm_transactions")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mm_txn_date    ON mm_transactions(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mm_txn_account ON mm_transactions(account_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mm_txn_type    ON mm_transactions(type)")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
 def initialize_db(conn: sqlite3.Connection) -> None:
     """Create all tables if they don't exist."""
     cursor = conn.cursor()
     for ddl in TABLES:
         cursor.execute(ddl)
     conn.commit()
+    _migrate_add_modified_balance(conn)
     _seed_mm_defaults(conn)

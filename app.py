@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from db.connection import get_connection
-from db.schema import initialize_db
+from db.schema import initialize_db, _migrate_add_modified_balance
 
 st.set_page_config(
     page_title="Asset Manager",
@@ -22,6 +22,9 @@ if "conn" not in st.session_state:
     conn = get_connection()
     initialize_db(conn)
     st.session_state.conn = conn
+else:
+    # Run pending migrations on already-open connections (safe no-op if done)
+    _migrate_add_modified_balance(st.session_state.conn)
 
 # Define pages
 pages = {
