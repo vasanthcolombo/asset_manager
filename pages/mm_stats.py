@@ -11,6 +11,7 @@ from models.mm_account import get_account_groups, get_accounts
 from models.mm_settings import get_mm_setting
 from models.mm_transaction import get_mm_transactions
 from services.mm_service import amount_in_default
+from services.cache import get_cached_running_balances
 
 
 # ── Two-level account picker (popover → expanders → checkboxes) ───────────────
@@ -140,7 +141,12 @@ sel_acc_ids = _account_filter_widget("top_accs", all_groups, all_accounts)
 
 # ── Fetch & filter transactions ───────────────────────────────────────────────
 all_txns = get_mm_transactions(conn, date_from=date_from, date_to=date_to)
-txns = [t for t in all_txns if not sel_acc_ids or t["account_id"] in sel_acc_ids]
+txns = [
+    t for t in all_txns
+    if not sel_acc_ids
+    or t["account_id"] in sel_acc_ids
+    or t.get("to_account_id") in sel_acc_ids
+]
 
 # ── Aggregate for charts ──────────────────────────────────────────────────────
 income_cat: dict[str, float] = {}
@@ -298,30 +304,56 @@ if st.session_state.pop("mm_stats_scroll_to_txns", False):
         height=0,
     )
 
-detail_txns = [t for t in txns if t["type"] != "TRANSFER"]
+detail_txns = txns  # include TRANSFER rows so balance changes are visible
 
 if not detail_txns:
-    st.info("No income/expense transactions in the selected period/filter.")
+    st.info("No transactions in the selected period/filter.")
     st.stop()
 
 # Build DataFrame with both display and numeric columns
+running_bals = get_cached_running_balances(conn)
+_acc_map = {a["id"]: a for a in all_accounts}  # for to-account group lookup
+
 rows = []
 for t in detail_txns:
     amt_default = amount_in_default(
         t["amount"], t["currency"], t.get("fx_rate_to_default"), default_ccy
     )
+
+    if t["type"] == "TRANSFER":
+        # Determine direction relative to the account filter
+        is_out = not sel_acc_ids or t["account_id"] in sel_acc_ids
+        if is_out:
+            rb = running_bals.get((t["id"], "from"), {})
+            cat_display  = f"→ {t.get('to_account_name') or 'External'}"
+            acc_group    = t.get("account_group_name") or ""
+            acc_name     = t.get("account_name") or ""
+        else:
+            rb = running_bals.get((t["id"], "to"), {})
+            cat_display  = f"← {t.get('account_name') or 'External'}"
+            to_acc = _acc_map.get(t.get("to_account_id"))
+            acc_group    = to_acc["group_name"] if to_acc else ""
+            acc_name     = t.get("to_account_name") or ""
+    else:
+        rb           = running_bals.get(t["id"], {})
+        cat_display  = t.get("category_name") or ""
+        acc_group    = t.get("account_group_name") or ""
+        acc_name     = t.get("account_name") or ""
+
+    balance_str = f"{rb['currency']} {rb['balance']:,.2f}" if rb else "—"
     rows.append({
-        "Date":          t["date"],
-        "Type":          t["type"],
-        "Account Group": t.get("account_group_name") or "",
-        "Account":       t.get("account_name") or "",
-        "Category":      t.get("category_name") or "",
-        "Amount":        f"{t['currency']} {t['amount']:,.2f}",
-        default_ccy:     round(amt_default, 2),
-        "Notes":         t.get("notes") or "",
+        "Date":            t["date"],
+        "Type":            t["type"],
+        "Account Group":   acc_group,
+        "Account":         acc_name,
+        "Category":        cat_display,
+        "Amount":          f"{t['currency']} {t['amount']:,.2f}",
+        default_ccy:       round(amt_default, 2),
+        "Account Balance": balance_str,
+        "Notes":           t.get("notes") or "",
         # hidden helper columns for filtering
-        "_amount_num":   float(t["amount"]),
-        "_date":         pd.to_datetime(t["date"]),
+        "_amount_num":     float(t["amount"]),
+        "_date":           pd.to_datetime(t["date"]),
     })
 df = pd.DataFrame(rows)
 
@@ -366,9 +398,8 @@ with st.expander("🔍 Filters", expanded=True):
             placeholder="All",
         )
     with f2[1]:
-        tbl_accs_in_df = [a for a in all_accounts if a["name"] in df["Account"].values]
         st.caption("Account")
-        tbl_sel_ids = _account_filter_widget("tbl_accs", all_groups, tbl_accs_in_df)
+        tbl_sel_ids = _account_filter_widget("tbl_accs", all_groups, all_accounts)
     with f2[2]:
         tbl_cat = st.multiselect(
             "Category",
@@ -394,8 +425,16 @@ if tbl_notes_sel:
     fdf = fdf[fdf["Notes"].isin(tbl_notes_sel)]
 
 st.caption(f"Showing **{len(fdf):,}** of {len(df):,} transactions")
+
+# "Account Balance" is only meaningful for a single-account view.
+# When multiple accounts are visible their running balances are independent
+# and mixing them in one column is misleading — hide it.
+_drop_cols = ["_amount_num", "_date"]
+if fdf["Account"].nunique() != 1:
+    _drop_cols.append("Account Balance")
+
 st.dataframe(
-    fdf.drop(columns=["_amount_num", "_date"]),
+    fdf.drop(columns=_drop_cols),
     use_container_width=True,
     hide_index=True,
 )

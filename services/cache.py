@@ -144,7 +144,29 @@ def get_cached_accounts_data(conn, default_currency: str) -> dict:
     return data
 
 
+def get_cached_running_balances(conn) -> dict:
+    """
+    Return {txn_id: {"balance": float, "currency": str}} for every mm_transaction.
+    Recalculates only when mm_transactions or mm_accounts change.
+    """
+    fp = get_mm_fingerprint(conn)
+    if (
+        "mm_running_balances" in st.session_state
+        and st.session_state.get("mm_running_balances_fp") == fp
+    ):
+        return st.session_state["mm_running_balances"]
+
+    from services.mm_service import compute_all_running_balances
+    result = compute_all_running_balances(conn)
+    st.session_state["mm_running_balances"]    = result
+    st.session_state["mm_running_balances_fp"] = fp
+    return result
+
+
 def invalidate_mm_accounts_cache() -> None:
-    """Clear the MM accounts/net-worth cache (call after any mm_transaction or mm_account change)."""
-    for key in ("mm_accounts_data", "mm_accounts_fp", "mm_accounts_ccy"):
+    """Clear MM accounts, net-worth and running-balance caches."""
+    for key in (
+        "mm_accounts_data", "mm_accounts_fp", "mm_accounts_ccy",
+        "mm_running_balances", "mm_running_balances_fp",
+    ):
         st.session_state.pop(key, None)

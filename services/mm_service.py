@@ -269,6 +269,77 @@ def get_all_account_balances_bulk(conn, default_currency: str) -> dict:
     return result
 
 
+def compute_all_running_balances(conn) -> dict:
+    """
+    Compute each account's running (native-currency) balance after every
+    INCOME/EXPENSE transaction, taking ALL transaction types (including
+    TRANSFER) into account so the balance accurately reflects real account state.
+
+    Only INCOME/EXPENSE transaction IDs are stored in the result (TRANSFER rows
+    are not shown in the detail table), but transfers DO move the running total
+    so that consecutive visible rows reflect the real account balance including
+    any intervening transfers.
+
+    Returns {txn_id: {"balance": float, "currency": str}}.
+    Processes transactions in chronological order (date ASC, id ASC).
+    """
+    accounts  = get_accounts(conn, active_only=False)
+    acc_by_id = {a["id"]: a for a in accounts}
+
+    running: dict[int, float] = {
+        a["id"]: float(a["initial_balance"]) for a in accounts
+    }
+
+    # Must be ASC so cumulative running totals are correct
+    rows = conn.execute(
+        "SELECT id, type, account_id, to_account_id, amount, currency, fx_rate_to_default "
+        "FROM mm_transactions ORDER BY date ASC, id ASC"
+    ).fetchall()
+
+    result: dict[int, dict] = {}
+    for r in rows:
+        ttype   = r["type"]
+        from_id = r["account_id"]
+        to_id   = r["to_account_id"]
+        fx      = r["fx_rate_to_default"]
+
+        if ttype == "INCOME" and from_id in acc_by_id:
+            acc_ccy = acc_by_id[from_id]["currency"]
+            running[from_id] += _convert(r["amount"], r["currency"], acc_ccy, fx)
+
+        elif ttype == "EXPENSE" and from_id in acc_by_id:
+            acc_ccy = acc_by_id[from_id]["currency"]
+            running[from_id] -= _convert(r["amount"], r["currency"], acc_ccy, fx)
+
+        elif ttype == "TRANSFER":
+            if from_id in acc_by_id:
+                acc_ccy = acc_by_id[from_id]["currency"]
+                running[from_id] -= _convert(r["amount"], r["currency"], acc_ccy, fx)
+            if to_id and to_id in acc_by_id:
+                acc_ccy = acc_by_id[to_id]["currency"]
+                running[to_id] += _convert(r["amount"], r["currency"], acc_ccy, fx)
+
+        # Store balance snapshot for INCOME/EXPENSE (int key) and TRANSFER (tuple key)
+        if ttype in ("INCOME", "EXPENSE") and from_id in acc_by_id:
+            result[r["id"]] = {
+                "balance":  running[from_id],
+                "currency": acc_by_id[from_id]["currency"],
+            }
+        elif ttype == "TRANSFER":
+            if from_id in acc_by_id:
+                result[(r["id"], "from")] = {
+                    "balance":  running[from_id],
+                    "currency": acc_by_id[from_id]["currency"],
+                }
+            if to_id and to_id in acc_by_id:
+                result[(r["id"], "to")] = {
+                    "balance":  running[to_id],
+                    "currency": acc_by_id[to_id]["currency"],
+                }
+
+    return result
+
+
 def compute_net_worth_from_balances(
     accounts: list, balances: dict, groups: list
 ) -> dict:
