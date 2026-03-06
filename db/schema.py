@@ -109,6 +109,13 @@ TABLES = [
         cached_at               TEXT NOT NULL DEFAULT (datetime('now'))
     )
     """,
+    # ── Portfolio Manager config tables ───────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS pm_brokers (
+        id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE
+    )
+    """,
     # ── Money Manager tables ──────────────────────────────────────────────────
     """
     CREATE TABLE IF NOT EXISTS mm_account_groups (
@@ -245,6 +252,17 @@ def _migrate_add_modified_balance(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _migrate_add_pm_brokers(conn: sqlite3.Connection) -> None:
+    """Create pm_brokers table if it doesn't exist (idempotent)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pm_brokers (
+            id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE
+        )
+    """)
+    conn.commit()
+
+
 def initialize_db(conn: sqlite3.Connection) -> None:
     """Create all tables if they don't exist."""
     cursor = conn.cursor()
@@ -252,4 +270,5 @@ def initialize_db(conn: sqlite3.Connection) -> None:
         cursor.execute(ddl)
     conn.commit()
     _migrate_add_modified_balance(conn)
+    _migrate_add_pm_brokers(conn)
     _seed_mm_defaults(conn)

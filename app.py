@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from db.connection import get_connection
-from db.schema import initialize_db, _migrate_add_modified_balance
+from db.schema import initialize_db, _migrate_add_modified_balance, _migrate_add_pm_brokers
 
 st.set_page_config(
     page_title="Asset Manager",
@@ -25,6 +25,7 @@ if "conn" not in st.session_state:
 else:
     # Run pending migrations on already-open connections (safe no-op if done)
     _migrate_add_modified_balance(st.session_state.conn)
+    _migrate_add_pm_brokers(st.session_state.conn)
 
 # Define pages
 pages = {
@@ -35,6 +36,7 @@ pages = {
         st.Page("pages/performance.py",  title="Performance",  icon="📈"),
         st.Page("pages/dividends.py",    title="Dividends",    icon="💰"),
         st.Page("pages/stocks.py",       title="Watchlist",    icon="⭐"),
+        st.Page("pages/pm_settings.py",  title="Settings",     icon="⚙️"),
     ],
     "Money Manager": [
         st.Page("pages/mm_record.py",        title="Record",       icon="✏️"),

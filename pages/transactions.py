@@ -12,6 +12,7 @@ from models.transaction import (
     get_distinct_brokers,
     get_distinct_tickers,
 )
+from models.pm_broker import get_pm_brokers
 from services.excel_service import parse_excel, validate_rows, upsert_from_dataframe
 from services.market_data import get_ticker_info
 from services.cache import invalidate_portfolio_cache, invalidate_performance_cache
@@ -27,12 +28,67 @@ entry_tab, upload_tab = st.tabs(["Manual Entry", "Excel Upload"])
 # Manual Entry Tab
 # ==============================
 with entry_tab:
+    # ── Ticker search (outside the form so suggestions can rerun live) ────────
+    _ticker_prefill = st.session_state.pop("pm_ticker_prefill", "")
+
+    _port_tickers = get_distinct_tickers(conn)
+    _search_val = st.text_input(
+        "Search ticker",
+        placeholder="Type symbol or name to search Yahoo Finance…",
+        key="pm_ticker_search",
+    )
+
+    if _search_val.strip():
+        # Yahoo Finance search
+        try:
+            import yfinance as yf
+            _results = yf.Search(_search_val.strip(), max_results=8).quotes
+            _results = [r for r in _results if r.get("symbol")]
+            # Portfolio tickers float to top
+            _port_set = set(_port_tickers)
+            _results.sort(key=lambda r: (0 if r["symbol"] in _port_set else 1))
+        except Exception:
+            _results = []
+
+        if _results:
+            _rcols = st.columns(min(len(_results), 4))
+            for i, r in enumerate(_results):
+                sym   = r["symbol"]
+                name  = r.get("shortname") or r.get("longname") or ""
+                exch  = r.get("exchange", "")
+                in_port = "★ " if sym in set(_port_tickers) else ""
+                label = f"{in_port}{sym}" + (f"  {name[:20]}" if name else "") + (f" [{exch}]" if exch else "")
+                with _rcols[i % 4]:
+                    if st.button(label, key=f"yfr_{sym}", use_container_width=True):
+                        st.session_state["pm_ticker_prefill"] = sym
+                        st.rerun()
+        else:
+            st.caption("No results found.")
+    elif _port_tickers:
+        # Show portfolio tickers as quick-picks (most recently traded first via DB order)
+        st.caption("Recent portfolio tickers — click to pre-fill:")
+        _show = _port_tickers[:12]
+        _pcols = st.columns(min(len(_show), 6))
+        for i, t in enumerate(_show):
+            with _pcols[i % 6]:
+                if st.button(t, key=f"pqp_{t}", use_container_width=True):
+                    st.session_state["pm_ticker_prefill"] = t
+                    st.rerun()
+
+    st.divider()
+
+    # ── Entry Form ────────────────────────────────────────────────────────────
+    # Brokers: use pm_brokers table; fall back to distinct brokers from transactions
+    _configured_brokers = get_pm_brokers(conn)
+    _all_brokers = _configured_brokers or get_distinct_brokers(conn)
+
     with st.form("add_transaction", clear_on_submit=True):
         cols = st.columns([1.5, 1.5, 1, 1.5, 1.5, 1.5])
         with cols[0]:
             txn_date = st.date_input("Date", value=date.today())
         with cols[1]:
-            txn_ticker = st.text_input("Ticker", placeholder="e.g. AAPL, D05.SI")
+            txn_ticker = st.text_input("Ticker", value=_ticker_prefill,
+                                       placeholder="e.g. AAPL, D05.SI")
         with cols[2]:
             txn_side = st.selectbox("Side", ["BUY", "SELL"])
         with cols[3]:
@@ -40,8 +96,11 @@ with entry_tab:
         with cols[4]:
             txn_qty = st.number_input("Quantity", min_value=0.0, step=1.0, format="%.2f")
         with cols[5]:
-            existing_brokers = get_distinct_brokers(conn)
-            txn_broker = st.text_input("Broker", placeholder="e.g. IBKR, Tiger")
+            if _all_brokers:
+                txn_broker_sel = st.selectbox("Broker", _all_brokers)
+                txn_broker = txn_broker_sel
+            else:
+                txn_broker = st.text_input("Broker", placeholder="e.g. IBKR, Tiger")
 
         col_extra1, col_extra2 = st.columns(2)
         with col_extra1:
@@ -64,7 +123,6 @@ with entry_tab:
             elif not txn_broker.strip():
                 st.error("Broker is required.")
             else:
-                # Auto-detect currency
                 try:
                     info = get_ticker_info(conn, txn_ticker.strip())
                     currency = info.get("currency", "USD")
@@ -90,6 +148,9 @@ with entry_tab:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
+
+    if not _all_brokers:
+        st.caption("No brokers configured. Add brokers in **Portfolio Manager → Settings**.")
 
 # ==============================
 # Excel Upload Tab
