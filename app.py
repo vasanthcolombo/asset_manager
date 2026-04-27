@@ -17,6 +17,19 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Password gate
+_app_password = os.environ.get("APP_PASSWORD", "")
+if _app_password and not st.session_state.get("authenticated"):
+    st.title("Asset Manager")
+    pwd = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if pwd == _app_password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+    st.stop()
+
 # Initialize database connection (cached across reruns)
 if "conn" not in st.session_state:
     conn = get_connection()

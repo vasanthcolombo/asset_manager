@@ -5,3 +5,20 @@ pandas>=2.0.0
 numpy>=1.24.0
 plotly>=5.18.0
 openpyxl>=3.1.0
+
+# API layer
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Google Drive sync
+google-api-python-client>=2.120.0
+google-auth>=2.29.0
+
+# Telegram bot
+python-telegram-bot>=21.0
+
+# AI agent endpoint
+anthropic>=0.25.0
+
+# HTTP client (bot -> API calls)
+httpx>=0.27.0
